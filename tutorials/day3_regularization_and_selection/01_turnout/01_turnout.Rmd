@@ -1,5 +1,5 @@
 ---
-title: "Reproduce-then-Extend — Voter Turnout & Term Limits (Political Science) (Day 1)"
+title: "SH Day 3: Regularization & Variable Selection — Voter Turnout & Term Limits (Political Science)"
 author: "Intro to Machine Learning · Bruce A. Desmarais"
 date: "`r format(Sys.Date(), '%B %d, %Y')`"
 output:
@@ -22,7 +22,9 @@ options(width = 82)
 > **Published study.** Kuhlmann, R. & Lewis, D. C. (2017). "Legislative Term Limits and Voter Turnout."
 > *State Politics & Policy Quarterly* 17(4):372–392. Data: UNC Dataverse doi:10.15139/S3/POGNLC. The original
 > analysis is an **OLS** regression of state lower-chamber turnout on institutional predictors (Table 2,
-> Col. 1). This example illustrates **out-of-sample prediction with a regression**.
+> Col. 1). We reproduce that model, then extend it with **regularization and variable selection** —
+> ridge, lasso, elastic net (`glmnet`) and best-subset selection (`abess`) — on the same outcome and
+> the same 13 predictors.
 
 # Background
 
@@ -310,48 +312,289 @@ raise turnout by ~12.8 points (`preselec`), stricter registration deadlines lowe
 professionalism (`squire`) and competition (`ranney`) enter positively — reproducing the reported signs and
 significance.
 
-# Out-of-sample prediction with the regression
+# Day 3: Regularization & Variable Selection
 
-The same OLS that *explains* turnout can also *predict* it. We hold out a random 30% test set, fit on the
-other 70%, and evaluate on the unseen states — the core train/test workflow.
+The published OLS *explains* turnout with all 13 predictors entered simultaneously. Day 3 asks a different
+question: **which predictors do we actually need, and can shrinking their coefficients buy better
+out-of-sample prediction?** OLS is unbiased but high-variance — with 13 correlated institutional predictors
+(recall the `income2`/`year` collinearity) it can overfit sample noise. **Regularization** trades a little
+bias for a large drop in variance by penalizing coefficient size; **variable selection** goes further and
+drops predictors entirely. We treat the same continuous outcome (`turnout`) and the same 13 predictors, and
+we compare four regularized fits against the OLS baseline.
+
+## Motivation and standardization
+
+The penalized estimators minimize the residual sum of squares **plus** a penalty on the coefficients:
+
+$$\hat\beta \;=\; \arg\min_\beta \;\tfrac{1}{2n}\sum_i (y_i - x_i^\top\beta)^2 \;+\; \lambda\Big[\underbrace{\tfrac{1-\alpha}{2}\lVert\beta\rVert_2^2}_{\text{ridge}} + \underbrace{\alpha\lVert\beta\rVert_1}_{\text{lasso}}\Big].$$
+
+- **Ridge** ($\alpha=0$): an $\ell_2$ penalty shrinks all coefficients toward zero but keeps every predictor;
+  ideal when predictors are correlated and we want to stabilize, not eliminate.
+- **Lasso** ($\alpha=1$): an $\ell_1$ penalty can shrink coefficients *exactly to zero*, performing
+  selection.
+- **Elastic net** ($0<\alpha<1$): blends the two — selection with grouped shrinkage of correlated predictors.
+
+Because the penalty acts on the **magnitude** of $\beta$, predictors must be on a common scale — otherwise a
+variable measured in small units (e.g. `income2` in \$1000s) would be penalized differently from one in large
+units. `glmnet` **standardizes internally** (`standardize = TRUE`, the default) and returns coefficients on
+the original scale. For interpreting *importance* we standardize by hand so the coefficients are directly
+comparable.
+
+```{r std-setup}
+library(glmnet)
+library(abess)
+
+y <- d$turnout
+X <- as.matrix(d[, preds])              # 13 predictors, original units
+Xs <- scale(X)                          # standardized copy (mean 0, sd 1) for importance
+```
+
+## Ridge, lasso, and elastic net: coefficient paths
+
+Each estimator traces a **coefficient path** as the penalty $\lambda$ ranges from large (everything shrunk to
+zero) to small (approaching OLS). Reading right-to-left shows the order in which predictors "enter."
+
+```{r paths, fig.height=3.2, fig.cap="Coefficient paths (log-lambda on the x-axis) for ridge, lasso, and elastic net. Ridge shrinks all 13 predictors smoothly; lasso and EN zero predictors out as the penalty grows (right)."}
+fit_ridge <- glmnet(X, y, alpha = 0)
+fit_lasso <- glmnet(X, y, alpha = 1)
+fit_en    <- glmnet(X, y, alpha = 0.5)
+
+par(mfrow = c(1, 3), mar = c(4, 4, 2.5, 1))
+plot(fit_ridge, xvar = "lambda"); title("ridge (alpha=0)", line = 1.4)
+plot(fit_lasso, xvar = "lambda"); title("lasso (alpha=1)", line = 1.4)
+plot(fit_en,    xvar = "lambda"); title("elastic net (alpha=0.5)", line = 1.4)
+```
+
+The **ridge** panel keeps all 13 paths alive, squeezing them toward zero together. The **lasso** panel
+collapses paths onto the zero line one by one as $\lambda$ rises — the top axis counts how many predictors
+survive. **Elastic net** looks in between.
+
+## Cross-validation to choose lambda
+
+We pick $\lambda$ by **k-fold cross-validation**, which estimates out-of-sample error for each candidate
+penalty. Two conventional choices: `lambda.min` (minimizes CV error) and `lambda.1se` (the largest $\lambda$
+whose CV error is within one standard error of the minimum — a simpler, more strongly regularized model).
+
+```{r cv, fig.height=3.0, fig.cap="Cross-validation curves. Dotted verticals mark lambda.min (left) and lambda.1se (right). Top axis = number of nonzero predictors."}
+set.seed(2026)
+cv_ridge <- cv.glmnet(X, y, alpha = 0)
+cv_lasso <- cv.glmnet(X, y, alpha = 1)
+cv_en    <- cv.glmnet(X, y, alpha = 0.5)
+
+par(mfrow = c(1, 3), mar = c(4, 4, 3, 1))
+plot(cv_ridge); title("ridge", line = 2.2)
+plot(cv_lasso); title("lasso", line = 2.2)
+plot(cv_en);    title("elastic net", line = 2.2)
+```
+
+```{r cv-lambdas, echo=FALSE}
+lam <- data.frame(
+  model      = c("ridge", "lasso", "elastic net"),
+  lambda_min = c(cv_ridge$lambda.min, cv_lasso$lambda.min, cv_en$lambda.min),
+  lambda_1se = c(cv_ridge$lambda.1se, cv_lasso$lambda.1se, cv_en$lambda.1se),
+  nonzero_1se = c(
+    cv_ridge$nzero[cv_ridge$index["1se", ]],
+    cv_lasso$nzero[cv_lasso$index["1se", ]],
+    cv_en$nzero[cv_en$index["1se", ]]))
+knitr::kable(lam, digits = 3, row.names = FALSE,
+             caption = "CV-selected penalties and model size at lambda.1se.")
+```
+
+Ridge keeps all 13 predictors at either $\lambda$. At **lambda.1se**, lasso and elastic net prune the model
+down to a compact set of institutional drivers — the strongly-signalled predictors (election timing,
+registration, professionalism, competition) survive while weak ones are zeroed out. **lambda.min** keeps more
+predictors than **lambda.1se** because it chases the CV-minimizing fit rather than a parsimonious one.
+
+## Interpreting shrinkage: coefficients side by side
+
+```{r coef-table, echo=FALSE}
+get_coef <- function(cvfit, s) as.numeric(coef(cvfit, s = s))[-1]  # drop intercept
+ctab <- data.frame(
+  predictor  = preds,
+  OLS        = coef(ols)[preds],
+  ridge_1se  = get_coef(cv_ridge, "lambda.1se"),
+  lasso_min  = get_coef(cv_lasso, "lambda.min"),
+  lasso_1se  = get_coef(cv_lasso, "lambda.1se"),
+  en_1se     = get_coef(cv_en,    "lambda.1se"))
+knitr::kable(ctab, digits = 2, row.names = FALSE,
+             caption = "OLS vs regularized coefficients (original units). Zeros show where lasso/EN dropped a predictor.")
+```
+
+Two lessons are visible in the table. First, **ridge shrinks every coefficient toward zero** but never to
+zero — the large OLS effects (`preselec`, `ranney`, `squire`) are pulled in but retained. Second,
+**lasso/EN set several coefficients to exactly zero**, delivering a sparser model; the survivors are the same
+predictors the descriptive section flagged as the strongest marginal signals.
+
+## Feature importance from standardized coefficients
+
+On the standardized scale, $|\hat\beta_j|$ is a direct **importance** measure: how many points of turnout move
+per one-SD change in predictor $j$, holding the rest fixed.
+
+```{r importance, fig.height=3.4, fig.cap="Feature importance = |standardized coefficient| from a CV-tuned lasso (lambda.1se). Larger bars = more predictive leverage per standard deviation."}
+cv_lasso_s <- cv.glmnet(Xs, y, alpha = 1)
+imp <- data.frame(
+  predictor = preds,
+  abs_beta  = abs(as.numeric(coef(cv_lasso_s, s = "lambda.1se"))[-1]))
+imp <- imp[imp$abs_beta > 0, ]
+imp <- imp[order(imp$abs_beta), ]
+imp$predictor <- factor(imp$predictor, levels = imp$predictor)
+
+ggplot(imp, aes(abs_beta, predictor)) +
+  geom_col(fill = "#1f78b4") +
+  labs(x = "|standardized coefficient| (points of turnout per 1 SD)", y = NULL)
+```
+
+Presidential-election timing (`preselec`) and registration difficulty dominate, with professionalism and
+competition close behind — matching the paper's substantive story that **when** and **how easily** people can
+vote swamps the finer institutional details.
+
+## Best-subset selection with abess
+
+Lasso selects by *continuous shrinkage*; **best-subset selection** instead searches directly for the
+best-fitting model of each size. The `abess` package makes this tractable via an adaptive
+best-subset algorithm and picks the support size by an information criterion.
+
+```{r abess}
+ab <- abess(X, y)                       # searches support sizes; picks best by (default) GIC
+ab_size  <- extract(ab)$support.size
+ab_coef  <- coef(ab, support.size = ab_size)[-1, 1]   # drop intercept
+ab_keep  <- names(ab_coef)[ab_coef != 0]
+cat("abess selected support size:", ab_size, "\n")
+cat("abess keeps:", paste(ab_keep, collapse = ", "), "\n")
+```
+
+```{r abess-plot, fig.height=2.8, fig.cap="abess information criterion vs support size; the dashed line marks the selected model."}
+gic <- data.frame(size = ab$support.size, gic = ab$tune.value)
+ggplot(gic, aes(size, gic)) +
+  geom_line(colour = "#1f78b4") + geom_point(colour = "#1f78b4") +
+  geom_vline(xintercept = ab_size, linetype = 2, colour = "#e31a1c") +
+  scale_x_continuous(breaks = gic$size) +
+  labs(x = "support size (number of predictors)", y = "abess tuning criterion")
+```
+
+```{r selection-contrast, echo=FALSE}
+lasso_keep <- preds[get_coef(cv_lasso, "lambda.1se") != 0]
+en_keep    <- preds[get_coef(cv_en,    "lambda.1se") != 0]
+sel <- data.frame(
+  predictor    = preds,
+  lasso_1se    = ifelse(preds %in% lasso_keep, "keep", "."),
+  elastic_net  = ifelse(preds %in% en_keep,    "keep", "."),
+  abess        = ifelse(preds %in% ab_keep,    "keep", "."))
+knitr::kable(sel, row.names = FALSE,
+             caption = "Selected support: which predictors each method keeps ('keep') vs drops ('.').")
+```
+
+`abess` selects a subset by *direct* best-subset search rather than shrinkage, so its support can differ from
+the lasso's — it tends to include the strongest institutional predictors while dropping the weakest, and
+because it does not shrink the retained coefficients it can keep a predictor the (more aggressive) 1se-lasso
+had zeroed. Comparing the columns shows **where the two selection philosophies agree and disagree**.
+
+## Hyperparameter tuning: lambda and alpha
+
+Elastic net has **two** tuning parameters: $\lambda$ (penalty strength) and $\alpha$ (the ridge/lasso mix). We
+grid-search $\alpha$, running a full CV over $\lambda$ at each value, and keep the $(\alpha,\lambda)$ pair with
+the lowest cross-validated error.
+
+```{r tune-alpha, fig.height=3.0, fig.cap="Minimum CV error (lambda.min) across the alpha grid. Lowest point = best ridge/lasso mixture."}
+set.seed(2026)
+alphas <- seq(0, 1, by = 0.1)
+foldid <- sample(rep(seq_len(10), length.out = nrow(X)))   # common folds for a fair comparison
+tune <- t(sapply(alphas, function(a) {
+  cvf <- cv.glmnet(X, y, alpha = a, foldid = foldid)
+  c(alpha = a, cvm = min(cvf$cvm), lambda = cvf$lambda.min)
+}))
+tune <- as.data.frame(tune)
+best <- tune[which.min(tune$cvm), ]
+
+ggplot(tune, aes(alpha, cvm)) +
+  geom_line(colour = "#1f78b4") + geom_point(colour = "#1f78b4") +
+  geom_point(data = best, colour = "#e31a1c", size = 3) +
+  labs(x = expression(alpha ~ "(0 = ridge, 1 = lasso)"),
+       y = "CV error (MSE) at lambda.min")
+cat(sprintf("Best alpha = %.1f  (lambda = %.3f,  CV MSE = %.2f)\n",
+            best$alpha, best$lambda, best$cvm))
+```
+
+The tuning curve shows how predictive error changes as we move from pure ridge to pure lasso; the red point is
+the CV-optimal blend, which we carry into the out-of-sample comparison.
+
+## Out-of-sample comparison: OLS vs regularized
+
+The decisive test is **held-out prediction**. We split 70/30, fit every method on the training set (choosing
+each method's $\lambda$ by CV *inside* the training set only), and score RMSE and $R^2$ on the untouched test
+set.
 
 ```{r oos}
 set.seed(2026)
 train <- sample(nrow(d), floor(0.7 * nrow(d)))
 test  <- setdiff(seq_len(nrow(d)), train)
+Xtr <- X[train, ]; Xte <- X[test, ]
+ytr <- y[train];   yte <- y[test]
 
-fit    <- lm(turnout ~ ., data = d[train, ])
-pred   <- predict(fit, d[test, ])
-actual <- d$turnout[test]
+score <- function(pred) {
+  rmse <- sqrt(mean((yte - pred)^2))
+  r2   <- 1 - sum((yte - pred)^2) / sum((yte - mean(ytr))^2)
+  c(RMSE = rmse, R2 = r2)
+}
 
-# out-of-sample error and R^2 (relative to the training-set mean)
-rmse <- sqrt(mean((actual - pred)^2))
-r2   <- 1 - sum((actual - pred)^2) / sum((actual - mean(d$turnout[train]))^2)
-cat(sprintf("Train n=%d, test n=%d;  out-of-sample RMSE=%.2f points,  out-of-sample R^2=%.3f\n",
-            length(train), length(test), rmse, r2))
+# OLS baseline
+ols_tr  <- lm(turnout ~ ., data = d[train, ])
+p_ols   <- predict(ols_tr, d[test, ])
+
+# glmnet family: CV lambda.min within the training set
+best_alpha <- best$alpha
+cvf <- function(a) cv.glmnet(Xtr, ytr, alpha = a)
+cv_r <- cvf(0); cv_l <- cvf(1); cv_e <- cvf(best_alpha)
+p_ridge <- as.numeric(predict(cv_r, Xte, s = "lambda.min"))
+p_lasso <- as.numeric(predict(cv_l, Xte, s = "lambda.min"))
+p_en    <- as.numeric(predict(cv_e, Xte, s = "lambda.min"))
+
+# abess on the training set
+ab_tr  <- abess(Xtr, ytr)
+p_abess <- as.numeric(predict(ab_tr, newx = Xte,
+                              support.size = extract(ab_tr)$support.size))
+
+res <- rbind(OLS = score(p_ols), ridge = score(p_ridge),
+             lasso = score(p_lasso),
+             `elastic net` = score(p_en), abess = score(p_abess))
+knitr::kable(round(res, 3),
+             caption = "Held-out performance (test n = 30% of states): RMSE (points) and R^2.")
 ```
 
-```{r oos-plot, echo=FALSE, fig.height=3.4, fig.cap="Predicted vs actual turnout on the held-out test set; the red line marks perfect prediction."}
-par(mar = c(4.2, 4.2, 2.5, 1))
-plot(pred, actual, pch = 16, col = "#1f78b455", xlab = "predicted (held-out test set)",
-     ylab = "actual turnout", main = "Out-of-sample prediction")
-abline(0, 1, col = "#e31a1c", lwd = 2)
+```{r oos-plot, echo=FALSE, fig.height=3.2, fig.cap="Test-set RMSE by method (lower is better). Regularization/selection is measured against the OLS baseline."}
+rdf <- data.frame(method = rownames(res), RMSE = res[, "RMSE"])
+rdf$method <- factor(rdf$method, levels = rdf$method[order(rdf$RMSE)])
+ggplot(rdf, aes(method, RMSE)) +
+  geom_col(fill = "#1f78b4") +
+  geom_hline(yintercept = res["OLS", "RMSE"], linetype = 2, colour = "#e31a1c") +
+  labs(x = NULL, y = "held-out RMSE (turnout points)",
+       caption = "Dashed line = OLS baseline")
 ```
 
-The held-out $R^2 \approx$ `r round(r2, 2)` is the **honest** estimate of predictive accuracy — scored on data
-the model never saw, rather than the in-sample $R^2 = 0.72$ that always flatters the fit. The points cluster
-around the 45° line, so the regression predicts turnout in unseen states reasonably well.
+With only 13 predictors and $n \approx 486$, this is a **low-dimensional, high-signal** problem, so OLS is already
+hard to beat — the regularized models land within a fraction of a point of it. That is itself the lesson:
+**regularization protects against variance without sacrificing much when OLS is well-behaved**, and it pays
+off far more when predictors are many relative to n or heavily collinear. The selection methods (lasso,
+elastic net, `abess`) deliver a **simpler** model — fewer predictors, easier to communicate — at essentially
+the same predictive cost, which is often the whole point.
 
 # Takeaway
 
-The published OLS is the right tool for the paper's *explanatory* question, and the *same model*, scored on a
-held-out test set, gives a calibrated estimate of how well turnout can be **predicted** out of sample.
-Explanation and prediction are different goals, and the train/test split is how we measure the second. (Later
-examples extend this baseline with polynomial terms, regularization, and tree-based learners.)
-
+- **Ridge** stabilizes correlated predictors by shrinking without dropping; **lasso** and **elastic net** add
+  automatic variable selection; **abess** does direct best-subset selection.
+- Tuning is by **cross-validation** over $\lambda$ (and $\alpha$ for elastic net); `lambda.1se` buys a simpler
+  model than `lambda.min` for a small CV-error cost.
+- On this well-behaved, low-dimensional turnout problem the regularized fits roughly **match** OLS
+  out-of-sample while yielding a **sparser, more interpretable** model — and the machinery pays off much more
+  as dimensionality and collinearity grow.
 
 # Recommended exercises
 
-1. Re-run the train/test split under several random seeds (or switch to 5-fold cross-validation) and report the spread in out-of-sample RMSE. How stable is the estimate?
-2. Add a quadratic term in `income2` (or an interaction between `preselec` and `regdifficulty`) and check whether held-out RMSE improves.
-3. Fit a cross-validated lasso on the same predictors and compare its out-of-sample RMSE and its selected variables to OLS.
+1. Re-run the out-of-sample comparison under several random seeds and report the spread in RMSE for each
+   method. Which method is most stable?
+2. Refit lasso and elastic net at `lambda.1se` (instead of `lambda.min`) in the out-of-sample block. How much
+   predictive accuracy do you trade for the simpler model?
+3. Add a handful of pure-noise predictors (`rnorm` columns) to `X` and refit. Do lasso and `abess` correctly
+   exclude them, and does regularization now beat OLS out-of-sample?
+4. Compare the `abess` support to the lasso support at several support sizes (`support.size = 3:8`). Where do
+   the two selection philosophies first disagree?

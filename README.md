@@ -11,11 +11,11 @@ Everything a participant needs: the slide decks, the hands-on R tutorials, and t
 slides/       Compiled slide decks (PDF), one per day
 tutorials/    Hands-on R Markdown tutorials + data, grouped by the day they're covered
   day1_intro_and_evaluation/
-      01_turnout, 02_fearon_laitin, desposato_wang_wu_trust, elaissaoui_student_grades
+      02_fearon_laitin, desposato_wang_wu_trust
   day2_regression_extensions/
-      kim_fdi_networks
+      kim_fdi_networks, elaissaoui_student_grades
   day3_regularization_and_selection/
-      castelli_froio_farright_media
+      castelli_froio_farright_media, 01_turnout
   day4_classic_learners/
       05_gibler_braithwaite, lyon_malik_policing, turcotte_covid_severity
 ```
