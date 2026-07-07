@@ -1,0 +1,140 @@
+---
+title: "Reproduce-then-Extend — Voter Turnout & Term Limits (Political Science) (Day 1)"
+author: "Intro to Machine Learning · Bruce A. Desmarais"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  pdf_document:
+    number_sections: true
+geometry: margin=1in
+fontsize: 10pt
+header-includes:
+  - \usepackage{fvextra}
+  - \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,breakanywhere,commandchars=\\\{\}}
+  - \DefineVerbatimEnvironment{verbatim}{Verbatim}{breaklines,breakanywhere}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 6.5, fig.height = 3.6, fig.align = "center")
+options(width = 82)
+```
+
+> **Published study.** Kuhlmann, R. & Lewis, D. C. (2017). "Legislative Term Limits and Voter Turnout."
+> *State Politics & Policy Quarterly* 17(4):372–392. Data: UNC Dataverse doi:10.15139/S3/POGNLC. The original
+> analysis is an **OLS** regression of state lower-chamber turnout on institutional predictors (Table 2,
+> Col. 1). This example illustrates **out-of-sample prediction with a regression**.
+
+# Background
+
+Kuhlmann and Lewis ask whether **legislative term limits shape voter turnout** in state legislative elections. Term limits reshape the electoral environment -- forcing open-seat contests and changing candidate experience and the information available to voters -- with theoretically ambiguous effects on participation. They use **OLS** to estimate the association between the strength of a state's term limits and its lower-chamber turnout, holding constant the major institutional and demographic determinants of turnout (registration rules, professionalism, party competition, election timing, income, diversity). In the reproduced Table 2 model the **term-limitedness coefficient is positive and statistically significant** -- more term-limited legislatures see modestly higher turnout -- though the largest effects are presidential-election timing and ease of registration.
+
+# Data and codebook
+
+**Unit of analysis:** a U.S. state lower-chamber legislative election (a **state-year**); n = 486.
+
+| Variable | Definition |
+|---|---|
+| `turnout` | lower-chamber election turnout rate, % of the voting-age population **(outcome)** |
+| `tlness` | term-limitedness: strength/bindingness of legislative term limits |
+| `lcr2` | log legislator-to-citizen ratio (per 100,000 residents) |
+| `mmds` | share of legislative seats elected from multimember districts |
+| `regdifficulty` | voter-registration closing date (days before the election) |
+| `straight` | 1 if the state offers straight-party-ticket voting |
+| `iuse2` | log number of ballot initiatives on the ballot |
+| `squire` | Squire index of legislative professionalism |
+| `ranney` | Ranney index of interparty electoral competition |
+| `income2` | per-capita income (thousands of dollars) |
+| `diversity3` | Herfindahl index of racial/ethnic diversity |
+| `preselec` | 1 in presidential-election years |
+| `redistrict` | 1 if districts were newly redrawn (post-redistricting) |
+| `year` | election year |
+
+# Descriptive results
+
+```{r data}
+d <- read.delim("https://raw.githubusercontent.com/bdesmarais/intro-ml-statistical-horizons-4day/main/tutorials/01_turnout_day1/data/turnout_state.tab")
+mvars <- c("turnout", "tlness", "lcr2", "mmds", "regdifficulty", "straight", "iuse2",
+           "squire", "ranney", "income2", "diversity3", "preselec", "redistrict", "year")
+d <- as.data.frame(na.omit(d[, mvars]))
+preds <- setdiff(mvars, "turnout")
+
+# descriptive statistics
+round(t(sapply(d, function(x) c(mean = mean(x), sd = sd(x), min = min(x), max = max(x)))), 2)
+```
+
+```{r desc-plot, fig.height=3, fig.cap="Turnout distribution (left) and each predictor's correlation with turnout (right)."}
+par(mfrow = c(1, 2))
+par(mar = c(4, 4, 2.5, 1))
+hist(d$turnout, breaks = 25, col = "#a6cee3", border = "white", main = "Outcome: turnout",
+     xlab = "turnout (%)")
+
+# correlation of each predictor with turnout
+cors <- sort(sapply(d[preds], function(x) cor(x, d$turnout)))
+par(mar = c(4, 8, 2.5, 1))
+barplot(cors, horiz = TRUE, las = 1, cex.names = 0.8,
+        col = ifelse(cors > 0, "#1f78b4", "#e31a1c"), main = "Correlation with turnout",
+        xlab = "correlation")
+abline(v = 0, col = "grey50")
+```
+
+# Reproduce the published regression
+
+We fit their exact Table 2, Column 1 specification.
+
+```{r reproduce}
+ols <- lm(turnout ~ tlness + lcr2 + mmds + regdifficulty + straight + iuse2 + squire +
+            ranney + income2 + diversity3 + preselec + redistrict + year, data = d)
+summary(ols)
+```
+
+**Confirmation against the published study.** Fitting their specification recovers the published model:
+`r nrow(d)` state-years and in-sample $R^2$ = `r round(summary(ols)$r.squared, 3)`. Presidential-election years
+raise turnout by ~12.8 points (`preselec`), stricter registration deadlines lower it (`regdifficulty`), and
+professionalism (`squire`) and competition (`ranney`) enter positively — reproducing the reported signs and
+significance.
+
+# Out-of-sample prediction with the regression
+
+The same OLS that *explains* turnout can also *predict* it. We hold out a random 30% test set, fit on the
+other 70%, and evaluate on the unseen states — the core train/test workflow.
+
+```{r oos}
+set.seed(2026)
+train <- sample(nrow(d), floor(0.7 * nrow(d)))
+test  <- setdiff(seq_len(nrow(d)), train)
+
+fit    <- lm(turnout ~ ., data = d[train, ])
+pred   <- predict(fit, d[test, ])
+actual <- d$turnout[test]
+
+# out-of-sample error and R^2 (relative to the training-set mean)
+rmse <- sqrt(mean((actual - pred)^2))
+r2   <- 1 - sum((actual - pred)^2) / sum((actual - mean(d$turnout[train]))^2)
+cat(sprintf("Train n=%d, test n=%d;  out-of-sample RMSE=%.2f points,  out-of-sample R^2=%.3f\n",
+            length(train), length(test), rmse, r2))
+```
+
+```{r oos-plot, echo=FALSE, fig.height=3.4, fig.cap="Predicted vs actual turnout on the held-out test set; the red line marks perfect prediction."}
+par(mar = c(4.2, 4.2, 2.5, 1))
+plot(pred, actual, pch = 16, col = "#1f78b455", xlab = "predicted (held-out test set)",
+     ylab = "actual turnout", main = "Out-of-sample prediction")
+abline(0, 1, col = "#e31a1c", lwd = 2)
+```
+
+The held-out $R^2 \approx$ `r round(r2, 2)` is the **honest** estimate of predictive accuracy — scored on data
+the model never saw, rather than the in-sample $R^2 = 0.72$ that always flatters the fit. The points cluster
+around the 45° line, so the regression predicts turnout in unseen states reasonably well.
+
+# Takeaway
+
+The published OLS is the right tool for the paper's *explanatory* question, and the *same model*, scored on a
+held-out test set, gives a calibrated estimate of how well turnout can be **predicted** out of sample.
+Explanation and prediction are different goals, and the train/test split is how we measure the second. (Later
+examples extend this baseline with polynomial terms, regularization, and tree-based learners.)
+
+
+# Recommended exercises
+
+1. Re-run the train/test split under several random seeds (or switch to 5-fold cross-validation) and report the spread in out-of-sample RMSE. How stable is the estimate?
+2. Add a quadratic term in `income2` (or an interaction between `preselec` and `regdifficulty`) and check whether held-out RMSE improves.
+3. Fit a cross-validated lasso on the same predictors and compare its out-of-sample RMSE and its selected variables to OLS.

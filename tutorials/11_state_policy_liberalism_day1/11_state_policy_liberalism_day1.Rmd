@@ -1,0 +1,180 @@
+---
+title: "Reproduce-then-Extend — State Policy Liberalism (American State Politics) (Day 1)"
+author: "Intro to Machine Learning · Bruce A. Desmarais"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  pdf_document:
+    number_sections: true
+geometry: margin=1in
+fontsize: 10pt
+header-includes:
+  - \usepackage{fvextra}
+  - \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,breakanywhere,commandchars=\\\{\}}
+  - \DefineVerbatimEnvironment{verbatim}{Verbatim}{breaklines,breakanywhere}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 6.5, fig.height = 3.6, fig.align = "center")
+options(width = 82)
+library(glmnet)   # lasso / ridge / elastic net
+```
+
+> **Published study.** Caughey, D. & Warshaw, C. (2016). "The Dynamics of State Policy Liberalism,
+> 1936--2014." *American Journal of Political Science* 60(4):899--913. Building on the state-representation
+> tradition (Erikson, Wright & McIver, *Statehouse Democracy*, 1993), the paper measures each state's
+> **policy liberalism** and links it to public opinion and state political conditions -- a **cross-sectional
+> OLS** of policy liberalism on state characteristics. This example illustrates **regularization and variable
+> selection** in a small-sample (n = 50) design, where predictors are many relative to observations.
+
+# Background
+
+A central question in American state politics is why some states adopt systematically more **liberal
+policies** than others. The state-representation literature argues that policy tracks **public opinion**
+(the "opinion--policy link"), mediated by **party control** and the organized strength of liberal and
+conservative constituencies. Caughey & Warshaw construct a dynamic measure of state policy liberalism and
+show it responds to mass preferences. Here we treat the **cross-section of the 50 states** as the unit of
+analysis and ask which state characteristics predict policy liberalism -- the setting the state-politics
+literature has studied with ordinary regression for decades.
+
+# Data and codebook
+
+**Unit of analysis:** a U.S. **state** (cross-section averaged over 2005--2012); n = 50. Data are drawn from
+the **Correlates of State Policy Project** (Jordan & Grossmann 2020), which compiles the standard
+state-politics measures.
+
+| Variable | Definition |
+|---|---|
+| `pollib_median` | state policy liberalism (Caughey--Warshaw), higher = more liberal **(outcome)** |
+| `mood` | public policy mood (higher = more liberal preferences) |
+| `citi6013` | citizen ideology (Berry et al.), higher = more liberal |
+| `ranney4_control` | Ranney index of Democratic party control (higher = more Democratic) |
+| `union_density` | percent of workers unionized |
+| `evangelical_pop` | evangelical share of the population |
+| `gini_coef` | income inequality (Gini coefficient) |
+| `gsppcap` | gross state product per capita |
+
+# Descriptive results
+
+```{r data}
+d <- read.csv("https://raw.githubusercontent.com/bdesmarais/intro-ml-statistical-horizons-4day/main/tutorials/11_state_policy_liberalism_day1/data/state_policy_liberalism.csv")
+preds <- setdiff(names(d), c("st", "pollib_median"))
+cat(sprintf("%d states x %d predictors (p/n = %.2f)\n", nrow(d), length(preds), length(preds)/nrow(d)))
+round(t(sapply(d[c("pollib_median", preds)],
+               function(x) c(mean = mean(x), sd = sd(x), min = min(x), max = max(x)))), 2)
+```
+
+```{r desc-plot, fig.height=3, fig.cap="Policy-liberalism distribution (left) and each predictor's correlation with policy liberalism (right)."}
+par(mfrow = c(1, 2)); par(mar = c(4, 4, 2.5, 1))
+hist(d$pollib_median, breaks = 12, col = "#a6cee3", border = "white",
+     main = "Outcome: policy liberalism", xlab = "policy liberalism")
+cors <- sort(sapply(d[preds], function(x) cor(x, d$pollib_median)))
+par(mar = c(4, 7, 2.5, 1))
+barplot(cors, horiz = TRUE, las = 1, cex.names = 0.85,
+        col = ifelse(cors > 0, "#1f78b4", "#e31a1c"), main = "Correlation with liberalism",
+        xlab = "correlation"); abline(v = 0, col = "grey50")
+```
+
+# Reproduce the published regression
+
+The state-representation model regresses policy liberalism on public opinion and state political conditions.
+
+```{r reproduce}
+fit <- lm(pollib_median ~ ., data = d[, c("pollib_median", preds)])
+round(summary(fit)$coefficients, 3)
+```
+
+**Confirmation against the literature.** In-sample $R^2$ = `r round(summary(fit)$r.squared, 2)`, and the
+**opinion--policy link** is recovered: more liberal **public mood** and **citizen ideology**, stronger
+**Democratic control**, and higher **union density** all predict more liberal policy, while a larger
+**evangelical** population predicts more conservative policy -- the signs the state-politics literature
+reports.
+
+# Regularization & variable selection
+
+With only **50 states** and **`r length(preds)` predictors**, ordinary least squares has few observations per
+coefficient and **over-fits**: it fits the 50 states well but predicts new states poorly. Penalized
+regression -- lasso ($L_1$), ridge ($L_2$), elastic net -- shrinks the coefficients to trade a little bias
+for much lower variance.
+
+```{r reg-coef}
+X <- as.matrix(d[, preds]); y <- d$pollib_median
+set.seed(2026)
+lasso <- cv.glmnet(X, y, alpha = 1); ridge <- cv.glmnet(X, y, alpha = 0); enet <- cv.glmnet(X, y, alpha = 0.5)
+n_keep <- sum(coef(lasso, s = "lambda.1se")[-1] != 0)
+cat(sprintf("At lambda.1se the lasso keeps %d of %d predictors (the rest are set to exactly 0).\n",
+            n_keep, length(preds)))
+data.frame(
+  OLS        = round(coef(fit)[-1], 3),
+  Lasso      = round(as.numeric(coef(lasso, s = "lambda.1se"))[-1], 3),
+  Ridge      = round(as.numeric(coef(ridge, s = "lambda.1se"))[-1], 3),
+  ElasticNet = round(as.numeric(coef(enet,  s = "lambda.1se"))[-1], 3),
+  row.names  = preds)
+```
+
+**Which fits best out of sample?** With n = 50 a single split is noisy, so we **repeat a 70/30 split 50
+times**: each replicate tunes the penalty by cross-validation on the training states and scores once on the
+held-out states. Penalized models are scored at `lambda.min` (the loss-minimizing penalty).
+
+```{r reg-perf}
+rmse <- function(p, yt) sqrt(mean((yt - p)^2))
+REPS <- 50; alphas <- c(Lasso = 1, Ridge = 0, ElasticNet = 0.5)
+M <- matrix(NA, REPS, 4, dimnames = list(NULL, c("OLS", names(alphas))))
+Xdf <- as.data.frame(X)
+for (r in 1:REPS) {
+  set.seed(2025 + r)
+  te <- sample(nrow(X), round(0.30 * nrow(X))); tr <- setdiff(seq_len(nrow(X)), te)
+  ols <- lm(y[tr] ~ ., data = Xdf[tr, ]); M[r, "OLS"] <- rmse(predict(ols, Xdf[te, ]), y[te])
+  for (a in names(alphas)) {
+    cv <- cv.glmnet(X[tr, ], y[tr], alpha = alphas[a])
+    M[r, a] <- rmse(as.numeric(predict(cv, X[te, ], s = "lambda.min")), y[te])
+  }
+}
+round(colMeans(M), 3)                                    # mean held-out RMSE over 50 splits
+best <- names(which.min(colMeans(M)[names(alphas)]))
+cat(sprintf("\nBest penalization: %s. Held-out RMSE: %s = %.3f vs OLS %.3f (%.0f%% lower).\n",
+            best, best, min(colMeans(M)[names(alphas)]), colMeans(M)["OLS"],
+            100 * (colMeans(M)["OLS"] - min(colMeans(M)[names(alphas)])) / colMeans(M)["OLS"]))
+```
+
+Because there are so few states per predictor, unpenalized OLS over-fits and the penalized models **predict
+new states more accurately**, while the lasso simultaneously **selects** the handful of state characteristics
+that carry the signal.
+
+```{r reg-path, echo=FALSE, fig.height=3.4, fig.cap="Lasso coefficient paths vs the penalty (log lambda); paths reaching zero are de-selected. The dashed line marks the CV-optimal penalty."}
+par(mar = c(4.2, 4.2, 3, 1))
+plot(lasso$glmnet.fit, xvar = "lambda", col = "#1f78b455")
+abline(v = log(lasso$lambda.min), lty = 2, col = "#e31a1c")
+```
+
+# Best-subset selection with ABESS
+
+Lasso reaches a sparse model through shrinkage. **Best-subset selection** instead searches directly for the
+subset of predictors that fits best; the **adaptive best-subset (ABESS)** algorithm does so efficiently and
+chooses the subset size automatically.
+
+```{r abess}
+library(abess)
+ab <- abess(X, y)
+cat(sprintf("ABESS selects a best subset of %d of %d predictors:\n", ab$best.size, length(preds)))
+cf <- as.numeric(coef(ab, support.size = ab$best.size))[-1]
+data.frame(predictor = preds, coef = round(cf, 3))[order(-abs(cf)), ]
+```
+
+Best subset and the lasso agree on the core drivers of state policy liberalism -- public opinion, party
+control, and organized labor -- reached by direct search rather than shrinkage.
+
+# Takeaway
+
+This example illustrates **regularization in a small-sample design**. State-politics regressions have few
+observations (50 states) relative to their predictors, so ordinary regression over-fits; lasso/elastic-net
+(`glmnet`) and best-subset selection (`abess`) predict new states more accurately **and** name the compact
+set of characteristics that drive policy liberalism.
+
+# Recommended exercises
+
+1. Add a couple more state characteristics from the Correlates of State Policy data and see whether the
+   held-out gain over OLS grows as the predictor-to-state ratio rises.
+2. Compare `lambda.min` and `lambda.1se` predictions: how much accuracy does the sparser 1-SE model give up?
+3. Refit predicting a *specific* policy (e.g., minimum wage) instead of the liberalism index and report which
+   predictors the lasso keeps.

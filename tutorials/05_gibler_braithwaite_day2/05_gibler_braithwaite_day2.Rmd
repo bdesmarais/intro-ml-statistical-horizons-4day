@@ -1,0 +1,226 @@
+---
+title: "Reproduce-then-Extend — Fatal Militarized Disputes (Gibler & Braithwaite) (Day 2)"
+author: "Intro to Machine Learning · Bruce A. Desmarais"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  pdf_document:
+    number_sections: true
+geometry: margin=1in
+fontsize: 10pt
+header-includes:
+  - \usepackage{fvextra}
+  - \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,breakanywhere,commandchars=\\\{\}}
+  - \DefineVerbatimEnvironment{verbatim}{Verbatim}{breaklines,breakanywhere}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 6.5, fig.height = 3.6, fig.align = "center")
+options(width = 82)
+library(glmnet)   # elastic net / lasso / ridge
+library(ranger)   # random forests
+library(xgboost)  # gradient boosting
+library(PRROC)    # precision-recall / ROC curves
+```
+
+> **Published study.** Gibler, D. M. & Braithwaite, A., "Hostile Contiguous States" (Harvard Dataverse
+> doi:10.7910/DVN/HQLOOJ) — a binary-response regression for whether a dyadic militarized dispute becomes
+> **fatal**, on dyadic predictors. This is *interstate* conflict, distinct from the civil-war cases; fatal
+> disputes are rare (~1.3%) → scored by **AUC-PR**.
+
+# Background
+
+Gibler and Braithwaite ask why a small fraction of **militarized interstate disputes escalate to fatalities** while most end without deaths, emphasizing the role of geography. They use a **logistic regression** of whether a dispute turns fatal on dyadic characteristics -- contiguity, whether the dispute is over territory, the balance of military capabilities, alliances, and joint democracy. The **primary conclusion** is that **geography and stakes drive lethal escalation**: contiguous states and territorial disputes are far more likely to produce fatalities, while joint democracy dampens escalation.
+
+# Data and codebook
+
+**Unit of analysis:** a militarized interstate dispute-dyad; n = 20,263 (~1.3% fatal).
+
+| Variable | Definition |
+|---|---|
+| `fatal` | 1 if the militarized dispute produced at least one battle death **(outcome)** |
+| `lowdem` | lower of the two states' Polity democracy scores (weakest-link) |
+| `terr500k10yr` | 1 if the dispute is over territory |
+| `defense` | 1 if the two states share a defensive alliance |
+| `caprat` | national-capability ratio (stronger to weaker state, CINC) |
+| `contig` | 1 if the states are geographically contiguous |
+| `peaceyears` | years since the dyad's previous dispute |
+| `spline1`-`spline3` | cubic-spline bases for peace-years (temporal dependence) |
+| `interaction4`, `pnbdem_low` | constructed interaction terms from the published specification |
+
+# Descriptive results
+
+```{r data}
+d <- read.csv("https://raw.githubusercontent.com/bdesmarais/intro-ml-statistical-horizons-4day/main/tutorials/05_gibler_braithwaite_day2/data/gb20.csv")
+preds <- setdiff(names(d), "fatal")
+preds <- preds[sapply(d[preds], function(x) length(unique(x)) > 1)]
+
+round(t(sapply(d[c("fatal", preds)],
+               function(x) c(mean = mean(x), sd = sd(x), min = min(x), max = max(x)))), 2)
+```
+
+```{r desc-plot, fig.height=3, fig.cap="Rare fatal-dispute outcome (left) and the predictors that differ most between fatal and non-fatal disputes (right)."}
+clean <- function(v) gsub("[._]+", " ", v)
+
+par(mfrow = c(1, 2))
+par(mar = c(4, 4, 2.5, 1))
+barplot(table(d$fatal), names.arg = c("non-fatal", "fatal"),
+        col = c("grey75", "#1f78b4"), main = "Outcome: fatal", ylab = "count")
+
+smd <- sapply(d[preds], function(x) (mean(x[d$fatal == 1]) - mean(x[d$fatal == 0])) / sd(x))
+smd <- tail(smd[order(abs(smd))], 8)
+par(mar = c(4, 7, 2.5, 1))
+barplot(smd, horiz = TRUE, las = 1, names.arg = clean(names(smd)), cex.names = 0.8,
+        col = ifelse(smd > 0, "#1f78b4", "#e31a1c"), main = "Fatal vs non-fatal",
+        xlab = "std. mean difference")
+abline(v = 0, col = "grey50")
+```
+
+# Reproduce the published regression
+
+```{r reproduce}
+gb_logit <- glm(reformulate(preds, "fatal"), data = d, family = binomial)
+round(summary(gb_logit)$coefficients, 3)
+```
+
+**Confirmation against the published study.** Territorial disputes and contiguity raise the probability of a
+fatal escalation while joint democracy (`lowdem`) lowers it — the coefficient signs and significance reproduce
+the published results.
+
+# Predictive results: regression vs machine learning
+
+We evaluate honestly: split off a **stratified 30% test set**, **tune each learner's hyperparameters by
+cross-validation on the training set only**, refit on the full training set, then score each model **once on
+the untouched test set** by AUC-PR. Nothing about the test set is used for fitting or tuning.
+
+```{r cv}
+X <- as.matrix(d[, preds]); y <- d$fatal
+aucpr <- function(p, yt) pr.curve(scores.class0 = p[yt == 1], scores.class1 = p[yt == 0])$auc.integral
+
+set.seed(2026)
+te <- c(sample(which(y == 1), round(0.30 * sum(y == 1))),      # stratified 30% test set
+        sample(which(y == 0), round(0.30 * sum(y == 0))))
+tr <- setdiff(seq_len(nrow(d)), te); yte <- y[te]
+
+## 1. Logistic RSF -- the published regression (no hyperparameters)
+m_logit <- glm(fatal ~ ., data = d[tr, c("fatal", preds)], family = binomial)
+test_auc <- c(Logit = aucpr(predict(m_logit, d[te, ], type = "response"), yte))
+
+## 2. Elastic net -- penalty lambda tuned by CV on the TRAINING set
+m_en <- cv.glmnet(X[tr, ], y[tr], alpha = 0.5, family = "binomial")
+test_auc["ElasticNet"] <- aucpr(as.numeric(predict(m_en, X[te, ], s = "lambda.min", type = "response")), yte)
+
+## 3. Random forest -- mtry tuned on the TRAINING set by out-of-bag AUC-PR
+best_rf <- NULL
+for (mt in unique(pmax(1, c(floor(sqrt(ncol(X))), floor(ncol(X) / 3), floor(ncol(X) / 2))))) {
+  rf <- ranger(x = X[tr, ], y = factor(y[tr]), num.trees = 800, mtry = mt, probability = TRUE)
+  sc <- aucpr(rf$predictions[, "1"], y[tr])          # OOB predictions = a training-only CV estimate
+  if (is.null(best_rf) || sc > best_rf$sc) best_rf <- list(mtry = mt, sc = sc)
+}
+m_rf <- ranger(x = X[tr, ], y = factor(y[tr]), num.trees = 800, mtry = best_rf$mtry, probability = TRUE)
+test_auc["RandomForest"] <- aucpr(predict(m_rf, X[te, ])$predictions[, "1"], yte)
+
+## 4. XGBoost -- depth x eta tuned by xgb.cv on the TRAINING set; nrounds by early stopping
+dtrain <- xgb.DMatrix(X[tr, ], label = y[tr])
+best <- NULL
+for (depth in c(3, 4, 6)) for (eta in c(0.05, 0.1)) {
+  xcv <- xgb.cv(params = list(objective = "binary:logistic", max_depth = depth, eta = eta,
+                              subsample = 0.9, colsample_bytree = 0.8, eval_metric = "aucpr"),
+                data = dtrain, nrounds = 600, nfold = 5,
+                early_stopping_rounds = 25, verbose = 0, maximize = TRUE)
+  score <- max(xcv$evaluation_log$test_aucpr_mean)
+  nr <- if (!is.null(xcv$best_iteration)) xcv$best_iteration else nrow(xcv$evaluation_log)
+  if (is.null(best) || score > best$score) best <- list(depth = depth, eta = eta, nrounds = nr, score = score)
+}
+m_xgb <- xgb.train(params = list(objective = "binary:logistic", max_depth = best$depth, eta = best$eta,
+                                 subsample = 0.9, colsample_bytree = 0.8),
+                   data = dtrain, nrounds = best$nrounds, verbose = 0)
+test_auc["XGBoost"] <- aucpr(predict(m_xgb, X[te, ]), yte)
+
+round(test_auc, 3)
+cat(sprintf("Best ML gain over the logistic RSF on the held-out test set: +%.3f AUC-PR\n",
+            max(test_auc[-1]) - test_auc["Logit"]))
+```
+
+```{r cv-plot, echo=FALSE, fig.height=3, fig.cap="Held-out test-set AUC-PR (higher is better). Grey = published logistic RSF; blue = best ML."}
+par(mar = c(4, 4, 2.5, 1))
+cols <- c("grey70", "#a6cee3", "#a6cee3", "#a6cee3"); cols[which.max(test_auc[-1]) + 1] <- "#1f78b4"
+bp <- barplot(test_auc, col = cols, ylim = c(0, 1.12), ylab = "AUC-PR", main = "Militarized disputes: held-out test AUC-PR by model")
+text(bp, test_auc, sprintf("%.3f", test_auc), pos = 3, cex = 0.85)
+```
+
+The learners lift AUC-PR notably over the additive logit by capturing interactions among contiguity, power
+asymmetry, democracy and recent peace.
+
+# Interpreting the model: importance, SHAP, and partial dependence
+
+```{r interp-fit}
+rf <- ranger(x = X, y = factor(y), num.trees = 500, probability = TRUE, importance = "permutation")
+xgb <- xgb.train(params = list(objective = "binary:logistic", max_depth = 4, eta = 0.05,
+                               subsample = 0.9, colsample_bytree = 0.8),
+                 data = xgb.DMatrix(X, label = y), nrounds = 300, verbose = 0)
+shap <- predict(xgb, X, predcontrib = TRUE)   # last column is the model bias
+shap <- shap[, colnames(X)]                    # drop the BIAS column
+```
+
+```{r imp-plot, echo=FALSE, fig.height=3.2, fig.cap="Permutation importance (left) and SHAP importance (right)."}
+par(mfrow = c(1, 2), mar = c(4, 7, 2.5, 1))
+imp_rf <- tail(sort(rf$variable.importance), 8)
+barplot(imp_rf, horiz = TRUE, las = 1, names.arg = clean(names(imp_rf)), cex.names = 0.8,
+        col = "#33a02c", main = "RF importance", xlab = "permutation importance")
+imp_sh <- tail(sort(colMeans(abs(shap))), 8)
+barplot(imp_sh, horiz = TRUE, las = 1, names.arg = clean(names(imp_sh)), cex.names = 0.8,
+        col = "#6a3d9a", main = "SHAP importance", xlab = "mean(|SHAP|)")
+```
+
+```{r beeswarm, echo=FALSE, fig.height=3.6, fig.cap="SHAP summary. Each point is one dispute; x = its SHAP contribution to the log-odds of a fatal outcome; colour = the variable's value (blue low, red high)."}
+top <- names(sort(colMeans(abs(shap)), decreasing = TRUE))[1:8]
+set.seed(1); s <- sample(nrow(shap), min(600, nrow(shap)))
+par(mar = c(4, 7, 2.5, 1))
+plot(NA, xlim = range(shap[, top]), ylim = c(0.5, length(top) + 0.5), yaxt = "n",
+     xlab = "SHAP value (log-odds of fatal)", ylab = "", main = "SHAP summary")
+abline(v = 0, col = "grey70"); axis(2, seq_along(top), clean(rev(top)), las = 1, cex.axis = 0.75)
+for (i in seq_along(top)) {
+  v <- rev(top)[i]
+  val <- (X[s, v] - min(X[, v])) / (max(X[, v]) - min(X[, v]))
+  points(shap[s, v], i + runif(length(s), -0.25, 0.25), pch = 16, cex = 0.5,
+         col = rgb(val, 0.15, 1 - val, 0.45))
+}
+legend("topright", c("high value", "low value"), pch = 16,
+       col = c(rgb(1, .15, 0, .8), rgb(0, .15, 1, .8)), bty = "n", cex = 0.7)
+```
+
+**Interpreting the relationships.** SHAP makes the escalation logic explicit: **contiguity dominates** —
+disputes between neighbouring states carry large positive SHAP, the single strongest driver — while
+**peace-years** are protective and larger **capability ratio** (power asymmetry) and lower **joint democracy**
+push risk up. Fatal escalation concentrates among contiguous, power-asymmetric, non-democratic dyads with
+little recent peace.
+
+```{r pdp, echo=FALSE, fig.height=3.2, fig.cap="Partial dependence (left) and SHAP dependence (right) for peace-years."}
+par(mfrow = c(1, 2), mar = c(4, 4.2, 2.5, 1))
+grid <- seq(quantile(d$peaceyears, .02), quantile(d$peaceyears, .98), length.out = 50)
+nd <- matrix(apply(X, 2, median), nrow = 50, ncol = ncol(X), byrow = TRUE, dimnames = list(NULL, colnames(X)))
+nd[, "peaceyears"] <- grid
+plot(grid, predict(m_rf, nd)$predictions[, "1"], type = "l", lwd = 2.5, col = "#1f78b4",
+     xlab = "peaceyears", ylab = "P(fatal)", main = "Partial dependence")
+plot(X[s, "peaceyears"], shap[s, "peaceyears"], pch = 16, col = rgb(.42, .24, .60, .3),
+     xlab = "peaceyears", ylab = "SHAP value", main = "SHAP dependence")
+lines(lowess(X[, "peaceyears"], shap[, "peaceyears"], f = 0.5), col = "#e31a1c", lwd = 2.5)
+abline(h = 0, lty = 2, col = "grey60")
+```
+
+Peace-years act **nonlinearly** — risk falls fastest in the first years after a dispute and then flattens — a
+decay the linear logit (with its peace-year splines) only crudely approximates and trees capture directly.
+
+# Takeaway
+
+Escalation to fatality depends on interactions among contiguity, power asymmetry, democracy and recent peace
+that a linear logit cannot fully represent. Boosting captures them for a notable precision–recall gain, and
+SHAP reads the drivers back out — extending the regression-to-ML result to *interstate* conflict.
+
+
+# Recommended exercises
+
+1. Expand the XGBoost tuning grid (depth, learning rate, rounds) and see whether AUC-PR improves over the reported value.
+2. Add one more learner (e.g., a random forest with a different number of features per split) and rank it against the others.
+3. Produce a SHAP dependence plot for a predictor other than the top one and interpret its shape.

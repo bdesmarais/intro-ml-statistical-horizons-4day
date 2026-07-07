@@ -1,0 +1,172 @@
+---
+title: "Reproduce-then-Extend — State Welfare Spending (American State Politics) (Day 1)"
+author: "Intro to Machine Learning · Bruce A. Desmarais"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  pdf_document:
+    number_sections: true
+geometry: margin=1in
+fontsize: 10pt
+header-includes:
+  - \usepackage{fvextra}
+  - \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,breakanywhere,commandchars=\\\{\}}
+  - \DefineVerbatimEnvironment{verbatim}{Verbatim}{breaklines,breakanywhere}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 6.5, fig.height = 3.6, fig.align = "center")
+options(width = 82)
+library(glmnet)   # lasso / ridge / elastic net
+```
+
+> **Published study.** The determinants of **state welfare effort** are a long-running question in American
+> state politics and policy (e.g., Plotnick & Winters, "A Politico-Economic Theory of Income Redistribution,"
+> *APSR* 1985; Brown, "State Responses to the Welfare Crisis," 1995). The canonical design is a
+> **cross-sectional OLS** of per-capita state welfare spending on economic need, fiscal capacity, political
+> ideology, and organized labor. This example illustrates **regularization and variable selection** in a
+> small-sample (n = 50) design.
+
+# Background
+
+Why do some states spend far more on social welfare than others? The state welfare-effort literature points
+to **fiscal capacity** (richer states can afford more), **need** (poverty and inequality), **political
+ideology and party control** (liberal, Democratic states redistribute more), and **organized labor**. These
+explanations are tested with ordinary cross-state regressions. Here we take the **cross-section of the 50
+states** and ask which of these characteristics predict welfare spending -- and whether penalized regression
+predicts new states better than ordinary least squares.
+
+# Data and codebook
+
+**Unit of analysis:** a U.S. **state** (cross-section averaged over 2005--2012); n = 50. Data come from the
+**Correlates of State Policy Project** (Jordan & Grossmann 2020).
+
+| Variable | Definition |
+|---|---|
+| `welfare_spending_percap` | per-capita state public-welfare spending (USD) **(outcome)** |
+| `mood` | public policy mood (higher = more liberal preferences) |
+| `citi6013` | citizen ideology (Berry et al.), higher = more liberal |
+| `ranney4_control` | Ranney index of Democratic party control (higher = more Democratic) |
+| `union_density` | percent of workers unionized |
+| `evangelical_pop` | evangelical share of the population |
+| `gini_coef` | income inequality (Gini coefficient) |
+| `gsppcap` | gross state product per capita (fiscal capacity) |
+
+# Descriptive results
+
+```{r data}
+d <- read.csv("https://raw.githubusercontent.com/bdesmarais/intro-ml-statistical-horizons-4day/main/tutorials/12_state_welfare_spending_day1/data/state_welfare_spending.csv")
+preds <- setdiff(names(d), c("st", "welfare_spending_percap"))
+cat(sprintf("%d states x %d predictors (p/n = %.2f)\n", nrow(d), length(preds), length(preds)/nrow(d)))
+round(t(sapply(d[c("welfare_spending_percap", preds)],
+               function(x) c(mean = mean(x), sd = sd(x), min = min(x), max = max(x)))), 2)
+```
+
+```{r desc-plot, fig.height=3, fig.cap="Welfare-spending distribution (left) and each predictor's correlation with spending (right)."}
+par(mfrow = c(1, 2)); par(mar = c(4, 4, 2.5, 1))
+hist(d$welfare_spending_percap, breaks = 12, col = "#a6cee3", border = "white",
+     main = "Outcome: welfare spending", xlab = "per-capita welfare spending")
+cors <- sort(sapply(d[preds], function(x) cor(x, d$welfare_spending_percap)))
+par(mar = c(4, 7, 2.5, 1))
+barplot(cors, horiz = TRUE, las = 1, cex.names = 0.85,
+        col = ifelse(cors > 0, "#1f78b4", "#e31a1c"), main = "Correlation with spending",
+        xlab = "correlation"); abline(v = 0, col = "grey50")
+```
+
+# Reproduce the published regression
+
+The welfare-effort model regresses per-capita spending on need, capacity, ideology, and labor.
+
+```{r reproduce}
+fit <- lm(welfare_spending_percap ~ ., data = d[, c("welfare_spending_percap", preds)])
+round(summary(fit)$coefficients, 3)
+```
+
+**Confirmation against the literature.** In-sample $R^2$ = `r round(summary(fit)$r.squared, 2)`. Consistent
+with the welfare-effort literature, states with **higher income/fiscal capacity**, more liberal **ideology
+and Democratic control**, and stronger **unions** spend more per capita on welfare.
+
+# Regularization & variable selection
+
+With **50 states** and **`r length(preds)` predictors**, ordinary least squares over-fits. Penalized
+regression -- lasso ($L_1$), ridge ($L_2$), elastic net -- shrinks the coefficients to reduce variance and
+improve prediction on new states.
+
+```{r reg-coef}
+X <- as.matrix(d[, preds]); y <- d$welfare_spending_percap
+set.seed(2026)
+lasso <- cv.glmnet(X, y, alpha = 1); ridge <- cv.glmnet(X, y, alpha = 0); enet <- cv.glmnet(X, y, alpha = 0.5)
+n_keep <- sum(coef(lasso, s = "lambda.min")[-1] != 0)
+cat(sprintf("At lambda.min the lasso keeps %d of %d predictors (the rest are set to exactly 0);\n",
+            n_keep, length(preds)))
+cat("the signal here is concentrated, so the sparser lambda.1se rule shrinks all the way to the mean.\n")
+data.frame(
+  OLS        = round(coef(fit)[-1], 2),
+  Lasso      = round(as.numeric(coef(lasso, s = "lambda.min"))[-1], 2),
+  Ridge      = round(as.numeric(coef(ridge, s = "lambda.min"))[-1], 2),
+  ElasticNet = round(as.numeric(coef(enet,  s = "lambda.min"))[-1], 2),
+  row.names  = preds)
+```
+
+**Which fits best out of sample?** With n = 50 we **repeat a 70/30 split 50 times**: each replicate tunes the
+penalty by cross-validation on the training states and scores once on the held-out states (penalized models
+at `lambda.min`).
+
+```{r reg-perf}
+rmse <- function(p, yt) sqrt(mean((yt - p)^2))
+REPS <- 50; alphas <- c(Lasso = 1, Ridge = 0, ElasticNet = 0.5)
+M <- matrix(NA, REPS, 4, dimnames = list(NULL, c("OLS", names(alphas))))
+Xdf <- as.data.frame(X)
+for (r in 1:REPS) {
+  set.seed(2025 + r)
+  te <- sample(nrow(X), round(0.30 * nrow(X))); tr <- setdiff(seq_len(nrow(X)), te)
+  ols <- lm(y[tr] ~ ., data = Xdf[tr, ]); M[r, "OLS"] <- rmse(predict(ols, Xdf[te, ]), y[te])
+  for (a in names(alphas)) {
+    cv <- cv.glmnet(X[tr, ], y[tr], alpha = alphas[a])
+    M[r, a] <- rmse(as.numeric(predict(cv, X[te, ], s = "lambda.min")), y[te])
+  }
+}
+round(colMeans(M))                                       # mean held-out RMSE ($) over 50 splits
+best <- names(which.min(colMeans(M)[names(alphas)]))
+cat(sprintf("\nBest penalization: %s. Held-out RMSE: %s = %s vs OLS %s (%.0f%% lower).\n",
+            best, best, format(round(min(colMeans(M)[names(alphas)])), big.mark = ","),
+            format(round(colMeans(M)["OLS"]), big.mark = ","),
+            100 * (colMeans(M)["OLS"] - min(colMeans(M)[names(alphas)])) / colMeans(M)["OLS"]))
+```
+
+With so few states per predictor, unpenalized OLS over-fits and the penalized models **predict new states'
+welfare spending more accurately**, while the lasso keeps a compact, interpretable set of drivers.
+
+```{r reg-path, echo=FALSE, fig.height=3.4, fig.cap="Lasso coefficient paths vs the penalty (log lambda). The dashed line marks the CV-optimal penalty."}
+par(mar = c(4.2, 4.2, 3, 1))
+plot(lasso$glmnet.fit, xvar = "lambda", col = "#1f78b455")
+abline(v = log(lasso$lambda.min), lty = 2, col = "#e31a1c")
+```
+
+# Best-subset selection with ABESS
+
+```{r abess}
+library(abess)
+ab <- abess(X, y)
+cat(sprintf("ABESS selects a best subset of %d of %d predictors:\n", ab$best.size, length(preds)))
+cf <- as.numeric(coef(ab, support.size = ab$best.size))[-1]
+data.frame(predictor = preds, coef = round(cf, 2))[order(-abs(cf)), ]
+```
+
+Best subset and the lasso agree on the core drivers of welfare effort -- fiscal capacity, ideology/party
+control, and labor -- reached by direct search rather than shrinkage.
+
+# Takeaway
+
+Like the state policy-liberalism example, this illustrates **regularization in a small-sample design**: with
+50 states and several predictors, ordinary regression over-fits, and lasso/elastic-net (`glmnet`) plus
+best-subset selection (`abess`) predict new states more accurately while naming the compact set of drivers of
+state welfare spending.
+
+# Recommended exercises
+
+1. Add more Correlates-of-State-Policy predictors and watch the held-out gain over OLS grow with the
+   predictor-to-state ratio.
+2. Log-transform the spending outcome and re-run: does the ranking of methods change?
+3. Compare the lasso-selected predictors here with those selected for policy liberalism (tutorial 11) -- which
+   state characteristics matter for both?

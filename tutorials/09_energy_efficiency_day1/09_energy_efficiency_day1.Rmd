@@ -1,0 +1,147 @@
+---
+title: "Reproduce-then-Extend — Building Energy Efficiency (Engineering) (Day 1)"
+author: "Intro to Machine Learning · Bruce A. Desmarais"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  pdf_document:
+    number_sections: true
+geometry: margin=1in
+fontsize: 10pt
+header-includes:
+  - \usepackage{fvextra}
+  - \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,breakanywhere,commandchars=\\\{\}}
+  - \DefineVerbatimEnvironment{verbatim}{Verbatim}{breaklines,breakanywhere}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 6.5, fig.height = 3.6, fig.align = "center")
+options(width = 82)
+library(readxl)   # read the .xlsx data file
+```
+
+> **Published study.** Tsanas, A. & Xifara, A. (2012). "Accurate quantitative estimation of energy performance
+> of residential buildings using statistical machine learning tools." *Energy and Buildings* 49:560–567. The
+> paper's baseline is a **linear regression** predicting a building's heating load from 8 geometry inputs
+> (n = 768; UCI id 242). This example illustrates the first regression extension: **polynomial terms**.
+
+# Background
+
+Tsanas and Xifara study how a building's **energy performance** depends on its **design geometry**, to help architects design more efficient buildings. Using 768 simulated building shapes, they estimate the **heating (and cooling) load** from eight geometry inputs, using a **linear regression** as the interpretable baseline alongside nonlinear machine-learning tools. The **primary conclusion** is that energy load is accurately predictable from geometry -- overall height, relative compactness, and glazing are the strongest drivers -- and that flexible learners (random forests) substantially outperform the linear model, motivating their use for this strongly nonlinear relationship.
+
+# Data and codebook
+
+**Unit of analysis:** a simulated residential **building design** (12 shapes and variants, via Ecotect); n = 768.
+
+| Variable | Definition |
+|---|---|
+| `Y1` | heating load (kWh per m^2 of floor area) **(outcome)** |
+| `X1` | relative compactness (volume-to-surface ratio, normalized) |
+| `X2` | surface area (m^2) |
+| `X3` | wall area (m^2) |
+| `X4` | roof area (m^2) |
+| `X5` | overall height (m) |
+| `X6` | orientation (2/3/4/5 = N/E/S/W) |
+| `X7` | glazing area (fraction of floor area) |
+| `X8` | glazing-area distribution (0-5 scheme) |
+
+# Descriptive results
+
+```{r data}
+tmp_xlsx <- tempfile(fileext = ".xlsx")
+download.file("https://raw.githubusercontent.com/bdesmarais/intro-ml-statistical-horizons-4day/main/tutorials/09_energy_efficiency_day1/data/ENB2012_data.xlsx", tmp_xlsx, mode = "wb", quiet = TRUE)
+d <- as.data.frame(read_excel(tmp_xlsx))   # data ships in the tutorial folder
+d <- d[, colSums(!is.na(d)) > 0]; d <- d[complete.cases(d), ]
+preds <- paste0("X", 1:8)
+
+round(t(sapply(d[c("Y1", preds)],
+               function(x) c(mean = mean(x), sd = sd(x), min = min(x), max = max(x)))), 2)
+```
+
+```{r desc-plot, fig.height=3, fig.cap="Heating-load distribution (left) and each geometry input's correlation with heating load (right)."}
+par(mfrow = c(1, 2))
+par(mar = c(4, 4, 2.5, 1))
+hist(d$Y1, breaks = 25, col = "#a6cee3", border = "white", main = "Outcome: Y1 (heating load)",
+     xlab = "heating load")
+cors <- sort(sapply(d[preds], function(x) cor(x, d$Y1)))
+par(mar = c(4, 4, 2.5, 1))
+barplot(cors, horiz = TRUE, las = 1, col = ifelse(cors > 0, "#1f78b4", "#e31a1c"),
+        main = "Correlation with Y1", xlab = "correlation")
+abline(v = 0, col = "grey50")
+```
+
+# Reproduce the published regression
+
+```{r reproduce}
+lin <- lm(Y1 ~ X1 + X2 + X3 + X4 + X5 + X6 + X7 + X8, data = d)
+summary(lin)
+```
+
+**Confirmation against the published study.** The linear model attains in-sample $R^2$ =
+`r round(summary(lin)$r.squared, 3)`, matching the ~0.92 reported by Tsanas & Xifara for their linear baseline.
+Overall height (`X5`) and relative compactness (`X1`) dominate — but the fit leaves clear structure, which is
+the motivation for going beyond a straight line.
+
+# Polynomial regression extension
+
+Heating load responds **nonlinearly** to geometry. The classic regression remedy is to add **polynomial
+terms**. We compare the linear model to polynomials of increasing degree in relative compactness (`X1`),
+keeping the other inputs linear. We pick the degree by cross-validation on a training set and report final RMSE on a held-out test set.
+
+```{r poly}
+set.seed(2026)
+others <- paste0("X", 2:8)
+te <- sample(nrow(d), round(0.30 * nrow(d)))            # hold out a 30% test set up front
+tr <- setdiff(seq_len(nrow(d)), te)
+
+# choose the polynomial degree by 5-fold CV on the TRAINING set only
+inner <- sample(rep(1:5, length.out = length(tr)))
+cv_rmse <- sapply(1:4, function(deg) {
+  r <- numeric(5)
+  for (k in 1:5) {
+    itr <- tr[inner != k]; ite <- tr[inner == k]
+    form <- reformulate(c(sprintf("poly(X1, %d, raw = TRUE)", deg), others), "Y1")
+    r[k] <- sqrt(mean((d$Y1[ite] - predict(lm(form, data = d[itr, ]), d[ite, ]))^2))
+  }
+  mean(r)
+})
+names(cv_rmse) <- paste0("degree ", 1:4)
+best_deg <- which.min(cv_rmse)
+round(cv_rmse, 3)                                    # CV RMSE per degree (training set)
+
+# refit at the CV-chosen degree on the full training set; score ONCE on the untouched test set
+form_best <- reformulate(c(sprintf("poly(X1, %d, raw = TRUE)", best_deg), others), "Y1")
+test_poly <- sqrt(mean((d$Y1[te] - predict(lm(form_best, data = d[tr, ]), d[te, ]))^2))
+test_lin  <- sqrt(mean((d$Y1[te] - predict(lm(reformulate(c("X1", others), "Y1"), data = d[tr, ]), d[te, ]))^2))
+cat(sprintf("CV-selected degree: %d.  Held-out test RMSE: polynomial = %.3f vs linear = %.3f
+",
+            best_deg, test_poly, test_lin))
+```
+
+```{r poly-plot, echo=FALSE, fig.height=3.4, fig.cap="Degree-3 polynomial fit of heating load on relative compactness, holding the other inputs at their means."}
+fit3 <- lm(reformulate(c("poly(X1, 3, raw = TRUE)", others), "Y1"), data = d)
+grid <- seq(quantile(d$X1, .02), quantile(d$X1, .98), length.out = 100)
+nd   <- as.data.frame(lapply(d[preds], function(x) rep(mean(x), 100))); nd$X1 <- grid
+yhat <- predict(fit3, nd)
+par(mar = c(4.2, 4.2, 2.5, 1))
+plot(d$X1, d$Y1, pch = 16, col = "#33333322", xlab = "X1 (relative compactness)", ylab = "Y1 (heating load)",
+     main = "Degree-3 polynomial fit", ylim = range(c(d$Y1, yhat)))
+lines(grid, yhat, col = "#e31a1c", lwd = 3)
+```
+
+On the held-out test set the CV-selected polynomial improves on the straight-line fit; the curve **bends** with compactness rather than running straight, capturing nonlinearity the
+linear model misses while remaining a fully interpretable regression.
+
+# Takeaway
+
+This example illustrates **polynomial regression** as the first, most interpretable extension of a linear
+model: adding low-order polynomial terms lowers cross-validated error by bending the fit to the data's
+curvature. (Tree-based learners push this further at the cost of a closed-form equation; Tsanas & Xifara
+report ML reaching ~0.999 $R^2$ on these data.)
+
+
+# Recommended exercises
+
+1. Try polynomial degrees 1-5 for the strongest predictor and use cross-validation to choose the degree.
+2. Predict the second response (cooling load) and compare which predictors matter most.
+3. Add an interaction between two predictors and test whether cross-validated error improves.

@@ -1,0 +1,148 @@
+---
+title: "Reproduce-then-Extend — Wine Quality (Food Science / Chemometrics) (Day 1)"
+author: "Intro to Machine Learning · Bruce A. Desmarais"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  pdf_document:
+    number_sections: true
+geometry: margin=1in
+fontsize: 10pt
+header-includes:
+  - \usepackage{fvextra}
+  - \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,breakanywhere,commandchars=\\\{\}}
+  - \DefineVerbatimEnvironment{verbatim}{Verbatim}{breaklines,breakanywhere}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 6.5, fig.height = 3.6, fig.align = "center")
+options(width = 82)
+```
+
+> **Published study.** Cortez, P. et al. (2009). "Modeling wine preferences by data mining from physicochemical
+> properties." *Decision Support Systems* 47(4):547–553. The baseline is a **multiple (linear) regression** of
+> sensory quality on 11 physicochemical measurements. Data: UCI (Vinho Verde red wine, n = 1599). This example
+> illustrates **polynomial regression** — and using cross-validation to judge whether it is worth it.
+
+# Background
+
+Cortez and colleagues ask whether **objective physicochemical measurements** of a wine can predict its **subjective sensory quality** (the median score of blind tasters), which would support quality certification and production decisions. They model quality from 11 physicochemical properties using several methods, with **multiple linear regression** as the interpretable baseline. The **primary conclusion** is that physicochemical properties do carry real signal -- **alcohol** (positive) and **volatile acidity** (negative) matter most -- but the relationship is modest and nonlinear, so flexible models (support vector machines in their paper) predict quality better than the linear regression.
+
+# Data and codebook
+
+**Unit of analysis:** an individual red 'Vinho Verde' **wine sample**; n = 1,599.
+
+| Variable | Definition |
+|---|---|
+| `quality` | sensory quality, median of >=3 blind tasters (0-10) **(outcome)** |
+| `fixed.acidity` | fixed (tartaric) acidity (g/L) |
+| `volatile.acidity` | volatile (acetic) acidity (g/L) |
+| `citric.acid` | citric acid (g/L) |
+| `residual.sugar` | residual sugar (g/L) |
+| `chlorides` | chlorides / salt (g/L) |
+| `free.sulfur.dioxide` | free SO2 (mg/L) |
+| `total.sulfur.dioxide` | total SO2 (mg/L) |
+| `density` | density (g/mL) |
+| `pH` | pH |
+| `sulphates` | potassium sulphate additive (g/L) |
+| `alcohol` | alcohol (% by volume) |
+
+# Descriptive results
+
+```{r data}
+url <- "https://raw.githubusercontent.com/bdesmarais/intro-ml-statistical-horizons-4day/main/tutorials/10_wine_quality_day1/data/winequality-red.csv"
+d <- read.csv(url, sep = ";")
+names(d) <- make.names(names(d))
+preds <- setdiff(names(d), "quality")
+
+round(t(sapply(d, function(x) c(mean = mean(x), sd = sd(x), min = min(x), max = max(x)))), 3)
+```
+
+```{r desc-plot, fig.height=3, fig.cap="Quality-score distribution (left) and each predictor's correlation with quality (right)."}
+par(mfrow = c(1, 2))
+par(mar = c(4, 4, 2.5, 1))
+barplot(table(d$quality), col = "#a6cee3", border = "white", main = "Outcome: quality",
+        xlab = "sensory score", ylab = "count")
+cors <- sort(sapply(d[preds], function(x) cor(x, d$quality)))
+par(mar = c(4, 8, 2.5, 1))
+barplot(cors, horiz = TRUE, las = 1, cex.names = 0.8,
+        col = ifelse(cors > 0, "#1f78b4", "#e31a1c"), main = "Correlation with quality",
+        xlab = "correlation")
+abline(v = 0, col = "grey50")
+```
+
+# Reproduce the published regression
+
+```{r reproduce}
+mr <- lm(quality ~ ., data = d)
+summary(mr)
+```
+
+**Confirmation against the published study.** The multiple regression attains in-sample $R^2$ =
+`r round(summary(mr)$r.squared, 3)`, matching the modest linear fit Cortez et al. report. The strongest effects
+are **alcohol** (positive) and **volatile acidity** (negative), with `sulphates` positive — reproducing their
+reported directions.
+
+# Polynomial regression extension
+
+Sensory quality may not respond to **alcohol** at a constant rate. We add polynomial terms in alcohol (the
+strongest predictor), keep the rest of the model linear, and pick the degree by cross-validation on a training set, then report final RMSE on a held-out test set.
+
+```{r poly}
+set.seed(2026)
+others <- setdiff(preds, "alcohol")
+te <- sample(nrow(d), round(0.30 * nrow(d)))            # hold out a 30% test set up front
+tr <- setdiff(seq_len(nrow(d)), te)
+
+# choose the polynomial degree by 5-fold CV on the TRAINING set only
+inner <- sample(rep(1:5, length.out = length(tr)))
+cv_rmse <- sapply(1:4, function(deg) {
+  r <- numeric(5)
+  for (k in 1:5) {
+    itr <- tr[inner != k]; ite <- tr[inner == k]
+    form <- reformulate(c(sprintf("poly(alcohol, %d, raw = TRUE)", deg), others), "quality")
+    r[k] <- sqrt(mean((d$quality[ite] - predict(lm(form, data = d[itr, ]), d[ite, ]))^2))
+  }
+  mean(r)
+})
+names(cv_rmse) <- paste0("degree ", 1:4)
+best_deg <- which.min(cv_rmse)
+round(cv_rmse, 4)                                    # CV RMSE per degree (training set)
+
+# refit at the CV-chosen degree on the full training set; score ONCE on the untouched test set
+form_best <- reformulate(c(sprintf("poly(alcohol, %d, raw = TRUE)", best_deg), others), "quality")
+test_poly <- sqrt(mean((d$quality[te] - predict(lm(form_best, data = d[tr, ]), d[te, ]))^2))
+test_lin  <- sqrt(mean((d$quality[te] - predict(lm(reformulate(c("alcohol", others), "quality"), data = d[tr, ]), d[te, ]))^2))
+cat(sprintf("CV-selected degree: %d.  Held-out test RMSE: polynomial = %.4f vs linear = %.4f
+",
+            best_deg, test_poly, test_lin))
+```
+
+```{r poly-plot, echo=FALSE, fig.height=3.4, fig.cap="Degree-2 polynomial fit of quality on alcohol, holding the other predictors at their means."}
+fit2 <- lm(reformulate(c("poly(alcohol, 2, raw = TRUE)", others), "quality"), data = d)
+grid <- seq(quantile(d$alcohol, .02), quantile(d$alcohol, .98), length.out = 100)
+nd   <- as.data.frame(lapply(d[preds], function(x) rep(mean(x), 100))); nd$alcohol <- grid
+par(mar = c(4.2, 4.2, 2.5, 1))
+plot(d$alcohol, d$quality, pch = 16, col = "#33333322", xlab = "alcohol (% vol)", ylab = "quality",
+     main = "Degree-2 polynomial fit")
+lines(grid, predict(fit2, nd), col = "#e31a1c", lwd = 3)
+```
+
+The fitted curve bends gently, but the **held-out test error barely moves** — a single polynomial term in
+alcohol adds almost nothing here. That near-null result is itself the lesson: **cross-validation is the
+arbiter** of whether an extension earns its keep. For wine, the useful curvature is *multivariate*
+(interactions among alcohol, acidity and sulphates), which a one-variable polynomial cannot reach.
+
+# Takeaway
+
+This example illustrates **polynomial regression** *and* using **cross-validation to decide whether a flexible
+extension is worth it**. Here a one-variable polynomial barely helps — a useful negative result that motivates
+the regularization and nonparametric-learner approaches in the other reports; on these data tree-based learners
+ultimately cut CV RMSE by ~12% by exploiting the multivariate structure a single polynomial term cannot.
+
+
+# Recommended exercises
+
+1. Fit a polynomial in a predictor other than alcohol (e.g., volatile acidity) and check cross-validated RMSE.
+2. Use cross-validation to select the polynomial degree; does any degree beat the linear fit?
+3. Compare the polynomial regression to a random forest on the same folds.

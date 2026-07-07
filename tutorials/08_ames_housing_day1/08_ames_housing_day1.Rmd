@@ -1,0 +1,209 @@
+---
+title: "Reproduce-then-Extend — Ames House Prices (Real Estate / Hedonic Economics) (Day 1)"
+author: "Intro to Machine Learning · Bruce A. Desmarais"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  pdf_document:
+    number_sections: true
+geometry: margin=1in
+fontsize: 10pt
+header-includes:
+  - \usepackage{fvextra}
+  - \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,breakanywhere,commandchars=\\\{\}}
+  - \DefineVerbatimEnvironment{verbatim}{Verbatim}{breaklines,breakanywhere}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 6.5, fig.height = 3.6, fig.align = "center")
+options(width = 82)
+library(glmnet)   # lasso / ridge / elastic net
+```
+
+> **Published study.** De Cock, D. (2011). "Ames, Iowa: Alternative to the Boston Housing Data as an End of
+> Semester Regression Project." *Journal of Statistics Education* 19(3). The analysis is an **OLS hedonic
+> price regression** of sale price on property features (n = 2930; data at the JSE site). This example
+> illustrates **regularization and variable selection** in a wide model.
+
+# Background
+
+De Cock introduces the **Ames housing dataset** as a modern, richer alternative to the classic Boston housing data for teaching regression. The intended use of the data is a **hedonic price regression** -- an OLS model that decomposes a home's **sale price** into the contributions of its individual characteristics (size, quality, age, amenities). The **primary conclusion** is methodological: a well-specified hedonic OLS explains the large majority of the variation in sale price ($R^2$ around 0.9), and the data support a full end-of-semester regression project from specification through diagnostics.
+
+# Data and codebook
+
+**Unit of analysis:** a single-family residential **home sale**; n = 2,930. The printed hedonic regression
+uses ten interpretable features; the regularization section uses De Cock's full ~80-feature set.
+
+| Variable | Definition |
+|---|---|
+| `SalePrice` | sale price in USD **(outcome)** |
+| `Overall.Qual` | overall material-and-finish quality (1-10) |
+| `Gr.Liv.Area` | above-grade living area (sq ft) |
+| `Total.Bsmt.SF` | total basement area (sq ft) |
+| `Garage.Cars` | garage capacity (number of cars) |
+| `Year.Built` | year of original construction |
+| `Year.Remod.Add` | year of the last remodel/addition |
+| `Full.Bath` | full bathrooms above grade |
+| `TotRms.AbvGrd` | total rooms above grade (excludes bathrooms) |
+| `Lot.Area` | lot size (sq ft) |
+| `Fireplaces` | number of fireplaces |
+
+# Descriptive results
+
+```{r data}
+d <- read.delim("https://raw.githubusercontent.com/bdesmarais/intro-ml-statistical-horizons-4day/main/tutorials/08_ames_housing_day1/data/AmesHousing.txt",
+                stringsAsFactors = FALSE, check.names = TRUE)
+feats <- c("Overall.Qual", "Gr.Liv.Area", "Total.Bsmt.SF", "Garage.Cars", "Year.Built",
+           "Year.Remod.Add", "Full.Bath", "TotRms.AbvGrd", "Lot.Area", "Fireplaces")
+for (j in feats) d[[j]][is.na(d[[j]])] <- median(d[[j]], na.rm = TRUE)   # a few missing values
+d <- d[complete.cases(d[, c("SalePrice", feats)]), ]
+
+round(t(sapply(d[c("SalePrice", feats)],
+               function(x) c(mean = mean(x), sd = sd(x), min = min(x), max = max(x)))), 1)
+```
+
+```{r desc-plot, fig.height=3, fig.cap="Sale-price distribution (left) and each feature's correlation with price (right)."}
+clean <- function(v) gsub("[._]+", " ", v)
+par(mfrow = c(1, 2))
+par(mar = c(4, 4, 2.5, 1))
+hist(d$SalePrice, breaks = 30, col = "#a6cee3", border = "white", main = "Outcome: SalePrice",
+     xlab = "sale price (USD)")
+cors <- sort(sapply(d[feats], function(x) cor(x, d$SalePrice)))
+par(mar = c(4, 7, 2.5, 1))
+barplot(cors, horiz = TRUE, las = 1, names.arg = clean(names(cors)), cex.names = 0.8,
+        col = "#1f78b4", main = "Correlation with price", xlab = "correlation")
+```
+
+# Reproduce the published regression
+
+A standard hedonic OLS on interpretable features (De Cock's regression-project design).
+
+```{r reproduce}
+hedonic <- lm(SalePrice ~ ., data = d[, c("SalePrice", feats)])
+summary(hedonic)
+```
+
+**Confirmation against the published study.** In-sample $R^2$ =
+`r round(summary(hedonic)$r.squared, 3)`, with **overall quality** and **above-grade living area** the dominant
+positive drivers of price. (Adding the full ~80-feature set with neighborhood indicators raises the OLS to
+$R^2 \approx 0.92$, matching De Cock's larger model.)
+
+# Regularization & variable selection
+
+Regularization's natural home is a **wide** model. We expand to the full feature set — every numeric and
+one-hot-encoded categorical predictor (~250 columns) — where ordinary least squares over-fits.
+
+```{r build-full}
+# build the full design matrix: numeric features as-is, categoricals one-hot encoded
+full <- d[, !names(d) %in% c("Order", "PID")]
+y    <- full$SalePrice; full$SalePrice <- NULL
+for (j in names(full)) {
+  if (is.character(full[[j]])) { full[[j]][is.na(full[[j]])] <- "NA"; full[[j]] <- factor(full[[j]]) }
+  else full[[j]][is.na(full[[j]])] <- median(full[[j]], na.rm = TRUE)
+}
+X <- model.matrix(~ . - 1, data = full)
+X <- X[, apply(X, 2, function(z) length(unique(z)) > 1)]   # drop constant columns
+cat(sprintf("Full design matrix: %d homes x %d features\n", nrow(X), ncol(X)))
+```
+
+```{r fit-reg}
+set.seed(2026)
+lasso <- cv.glmnet(X, y, alpha = 1)     # L1
+ridge <- cv.glmnet(X, y, alpha = 0)     # L2
+enet  <- cv.glmnet(X, y, alpha = 0.5)   # L1 + L2
+n_keep <- sum(coef(lasso, s = "lambda.1se")[-1] != 0)   # nonzero features at the 1-SE penalty
+cat(sprintf("At lambda.1se the lasso keeps %d of %d features (the rest are set to 0); ridge keeps all but shrinks them.\n",
+            n_keep, ncol(X)))
+```
+
+**Which fits best out of sample?** We hold out a random 30% test set, fit each model on the training 70%
+(penalty tuned by CV inside the training data), and compare held-out **RMSE** (dollars) on the untouched test
+set; we **repeat the split 10 times and average**. Penalized models are scored at `lambda.min`, the
+loss-minimizing penalty (the right choice for *prediction*; the sparser `lambda.1se` used for the coefficient
+display trades a little accuracy for parsimony). On ~250 features unpenalized OLS over-fits badly.
+
+```{r reg-perf}
+rmse   <- function(p, yt) sqrt(mean((yt - p)^2))
+REPS   <- 10
+alphas <- c(Lasso = 1, Ridge = 0, ElasticNet = 0.5)
+Xdf <- as.data.frame(X)
+M <- matrix(NA, REPS, 4, dimnames = list(NULL, c("OLS", names(alphas))))
+for (r in 1:REPS) {
+  set.seed(2025 + r)
+  te <- sample(nrow(X), round(0.30 * nrow(X))); tr <- setdiff(seq_len(nrow(X)), te)
+  ols <- lm(y[tr] ~ ., data = Xdf[tr, ])                                       # baseline OLS
+  M[r, "OLS"] <- rmse(predict(ols, Xdf[te, ]), y[te])
+  for (a in names(alphas)) {
+    cv <- cv.glmnet(X[tr, ], y[tr], alpha = alphas[a])
+    M[r, a] <- rmse(as.numeric(predict(cv, X[te, ], s = "lambda.min")), y[te])
+  }
+}
+round(colMeans(M))                                            # mean held-out RMSE ($) over 10 splits
+best <- names(which.min(colMeans(M)[names(alphas)]))
+cat(sprintf("\nBest penalization (10 splits): %s (mean test RMSE = $%s vs OLS $%s).\n",
+            best, format(round(min(colMeans(M)[names(alphas)])), big.mark = ","),
+            format(round(colMeans(M)["OLS"]), big.mark = ",")))
+```
+
+On ~250 features OLS over-fits, but lasso/ridge/elastic-net keep only a few dozen effective predictors and
+**cut held-out RMSE well below OLS** — regularization buying both parsimony and accuracy. This is the setting
+(wide, collinear design) where a penalty pays off in prediction, in contrast to compact, curated models with
+large samples where a penalty mainly buys parsimony rather than accuracy.
+
+```{r reg-path, echo=FALSE, fig.height=3.4, fig.cap="Lasso coefficient paths vs the penalty (log lambda) on the full Ames feature set; the dashed line marks the CV-optimal penalty."}
+par(mar = c(4.2, 4.2, 3, 1))
+plot(lasso$glmnet.fit, xvar = "lambda", col = "#1f78b433")
+abline(v = log(lasso$lambda.min), lty = 2, col = "#e31a1c")
+```
+
+To see the shrinkage concretely, we refit the three penalties on the **ten interpretable features** and place
+the penalized coefficients next to the original OLS (dollars per unit):
+
+```{r reg-coef}
+Xi <- as.matrix(d[, feats])
+li <- cv.glmnet(Xi, y, alpha = 1); ri <- cv.glmnet(Xi, y, alpha = 0); ei <- cv.glmnet(Xi, y, alpha = 0.5)
+coefs_at_1se <- function(cv) as.numeric(coef(cv, s = "lambda.1se"))[-1]   # 1-SE penalty
+data.frame(
+  OLS        = round(coef(hedonic)[-1]),
+  Lasso      = round(coefs_at_1se(li)),
+  Ridge      = round(coefs_at_1se(ri)),
+  ElasticNet = round(coefs_at_1se(ei)),
+  row.names = feats)
+```
+
+Each penalty pulls the OLS dollar-coefficients toward zero (ridge most uniformly); at the 1-SE penalty the
+lasso drops the weakest of the ten to exactly zero, and on the full ~250-column model above it zeroes the
+large majority of columns.
+
+# Best-subset selection with ABESS
+
+Lasso reaches a sparse model *indirectly* through shrinkage. **Best-subset selection** instead searches
+directly for the subset of features that fits best, and — via the **adaptive best-subset (ABESS)** algorithm —
+does so in polynomial time even on this wide design, choosing the subset size automatically.
+
+```{r abess}
+library(abess)
+ab <- abess(X, y)                                  # X = full ~250-feature design matrix
+cat(sprintf("ABESS selects a best subset of %d of %d features. Top few by |coefficient|:\n",
+            ab$best.size, ncol(X)))
+cf  <- as.numeric(coef(ab, support.size = ab$best.size))[-1]
+top <- order(abs(cf), decreasing = TRUE)[1:8]
+data.frame(feature = colnames(X)[top], coef = round(cf[top]))
+```
+
+Best subset and the $L_1$ path agree on the price drivers — overall quality, living area, and the strongest
+neighborhood and condition indicators — reached by direct search rather than shrinkage.
+
+# Takeaway
+
+This example illustrates **regularization and variable selection** in the setting it was built for: a wide
+hedonic model where unpenalized OLS over-fits. Lasso/elastic-net (`glmnet`) and best-subset selection (`abess`)
+each pick a compact, accurate model from ~250 candidate features — the principled way to handle many
+correlated predictors.
+
+
+# Recommended exercises
+
+1. Compare lasso, ridge, and elastic net out-of-sample RMSE on identical folds; which wins?
+2. Add interaction or polynomial terms for a couple of strong predictors and see whether penalized RMSE improves.
+3. Plot the lasso coefficient path and note the order in which variables enter the model.

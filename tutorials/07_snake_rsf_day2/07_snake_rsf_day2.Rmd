@@ -1,0 +1,222 @@
+---
+title: "Reproduce-then-Extend — Snake Habitat Selection (Ecology) (Day 2)"
+author: "Intro to Machine Learning · Bruce A. Desmarais"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  pdf_document:
+    number_sections: true
+geometry: margin=1in
+fontsize: 10pt
+header-includes:
+  - \usepackage{fvextra}
+  - \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,breakanywhere,commandchars=\\\{\}}
+  - \DefineVerbatimEnvironment{verbatim}{Verbatim}{breaklines,breakanywhere}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 6.5, fig.height = 3.6, fig.align = "center")
+options(width = 82)
+library(glmnet)   # elastic net / lasso / ridge
+library(ranger)   # random forests
+library(xgboost)  # gradient boosting
+library(PRROC)    # precision-recall / ROC curves
+```
+
+> **Published study.** Multiscale spatial model of snake habitat selection, *PLoS ONE*
+> (doi:10.1371/journal.pone.0123307; S1 Dataset, open). A **logistic resource-selection function** — *used*
+> (1) vs *available* (0) locations (n = 2075) on canopy cover, shrub cover, aspect, elevation and ground
+> cover. Use-vs-availability is the ecology workhorse design → scored by **AUC-PR**.
+
+# Background
+
+Where a snake chooses to be reveals its **habitat and thermal requirements**, which matter for conservation and for predicting where the species can persist. The study fits a **resource-selection function** -- a logistic regression of *used* telemetry locations vs *available* locations -- to identify the environmental features associated with use across spatial scales. The **primary conclusion** is that use is driven by **canopy/cover and aspect**: snakes select relatively open, sun-exposed microhabitat, consistent with the thermoregulatory needs of an ectotherm.
+
+# Data and codebook
+
+**Unit of analysis:** a sampled location -- a telemetry-**used** location vs an **available** location; n = 2,075.
+
+| Variable | Definition |
+|---|---|
+| `Response` | 1 = used location, 0 = available location **(outcome)** |
+| `CanCov` | canopy cover (%) |
+| `ShrubCov` | shrub cover (%) |
+| `Aspect` | slope aspect (compass orientation / index) |
+| `Elevation` | elevation |
+| `Cover.` | total ground cover |
+| `CoverFOR`, `CoverHW`, `CoverOW`, `CoverPS`, `CoverWW`, `CoverFP` | proportion of the surrounding area in each vegetation/cover class |
+| `SexM` | 1 if the tracked snake is male |
+
+# Descriptive results
+
+```{r data}
+d <- read.csv("https://raw.githubusercontent.com/bdesmarais/intro-ml-statistical-horizons-4day/main/tutorials/07_snake_rsf_day2/data/snake_clean.csv")
+preds <- setdiff(names(d), "Response")
+preds <- preds[sapply(d[preds], function(x) length(unique(x)) > 1)]
+
+# descriptive statistics for the outcome and predictors
+round(t(sapply(d[c("Response", preds)],
+               function(x) c(mean = mean(x), sd = sd(x), min = min(x), max = max(x)))), 2)
+```
+
+```{r desc-plot, fig.height=3, fig.cap="Outcome balance (left) and the variables that differ most between used and available locations (right)."}
+clean <- function(v) gsub("[._]+", " ", v)   # tidy the mangled column names for labels
+
+par(mfrow = c(1, 2))
+par(mar = c(4, 4, 2.5, 1))
+barplot(table(d$Response), names.arg = c("available", "used"),
+        col = c("grey75", "#1f78b4"), main = "Outcome: Response", ylab = "count")
+
+# standardized mean difference (used - available) per predictor
+smd <- sapply(d[preds], function(x) (mean(x[d$Response == 1]) - mean(x[d$Response == 0])) / sd(x))
+smd <- tail(smd[order(abs(smd))], 8)
+par(mar = c(4, 7, 2.5, 1))
+barplot(smd, horiz = TRUE, las = 1, names.arg = clean(names(smd)), cex.names = 0.8,
+        col = ifelse(smd > 0, "#1f78b4", "#e31a1c"), main = "Used vs available",
+        xlab = "std. mean difference")
+abline(v = 0, col = "grey50")
+```
+
+# Reproduce the published RSF regression
+
+```{r reproduce}
+rsf <- glm(reformulate(preds, "Response"), data = d, family = binomial)
+round(summary(rsf)$coefficients, 3)
+```
+
+**Confirmation against the published study.** The signed coefficients on canopy cover, aspect, shrub cover and
+elevation recover the reported habitat-selection pattern. This logistic RSF is our regression baseline.
+
+# Predictive results: regression vs machine learning
+
+We evaluate honestly: split off a **stratified 30% test set**, **tune each learner's hyperparameters by
+cross-validation on the training set only**, refit on the full training set, then score each model **once on
+the untouched test set** by AUC-PR. Nothing about the test set is used for fitting or tuning.
+
+```{r cv}
+X <- as.matrix(d[, preds]); y <- d$Response
+aucpr <- function(p, yt) pr.curve(scores.class0 = p[yt == 1], scores.class1 = p[yt == 0])$auc.integral
+
+set.seed(2026)
+te <- c(sample(which(y == 1), round(0.30 * sum(y == 1))),      # stratified 30% test set
+        sample(which(y == 0), round(0.30 * sum(y == 0))))
+tr <- setdiff(seq_len(nrow(d)), te); yte <- y[te]
+
+## 1. Logistic RSF -- the published regression (no hyperparameters)
+m_logit <- glm(Response ~ ., data = d[tr, c("Response", preds)], family = binomial)
+test_auc <- c(Logit = aucpr(predict(m_logit, d[te, ], type = "response"), yte))
+
+## 2. Elastic net -- penalty lambda tuned by CV on the TRAINING set
+m_en <- cv.glmnet(X[tr, ], y[tr], alpha = 0.5, family = "binomial")
+test_auc["ElasticNet"] <- aucpr(as.numeric(predict(m_en, X[te, ], s = "lambda.min", type = "response")), yte)
+
+## 3. Random forest -- mtry tuned on the TRAINING set by out-of-bag AUC-PR
+best_rf <- NULL
+for (mt in unique(pmax(1, c(floor(sqrt(ncol(X))), floor(ncol(X) / 3), floor(ncol(X) / 2))))) {
+  rf <- ranger(x = X[tr, ], y = factor(y[tr]), num.trees = 800, mtry = mt, probability = TRUE)
+  sc <- aucpr(rf$predictions[, "1"], y[tr])          # OOB predictions = a training-only CV estimate
+  if (is.null(best_rf) || sc > best_rf$sc) best_rf <- list(mtry = mt, sc = sc)
+}
+m_rf <- ranger(x = X[tr, ], y = factor(y[tr]), num.trees = 800, mtry = best_rf$mtry, probability = TRUE)
+test_auc["RandomForest"] <- aucpr(predict(m_rf, X[te, ])$predictions[, "1"], yte)
+
+## 4. XGBoost -- depth x eta tuned by xgb.cv on the TRAINING set; nrounds by early stopping
+dtrain <- xgb.DMatrix(X[tr, ], label = y[tr])
+best <- NULL
+for (depth in c(3, 4, 6)) for (eta in c(0.05, 0.1)) {
+  xcv <- xgb.cv(params = list(objective = "binary:logistic", max_depth = depth, eta = eta,
+                              subsample = 0.9, colsample_bytree = 0.8, eval_metric = "aucpr"),
+                data = dtrain, nrounds = 600, nfold = 5,
+                early_stopping_rounds = 25, verbose = 0, maximize = TRUE)
+  score <- max(xcv$evaluation_log$test_aucpr_mean)
+  nr <- if (!is.null(xcv$best_iteration)) xcv$best_iteration else nrow(xcv$evaluation_log)
+  if (is.null(best) || score > best$score) best <- list(depth = depth, eta = eta, nrounds = nr, score = score)
+}
+m_xgb <- xgb.train(params = list(objective = "binary:logistic", max_depth = best$depth, eta = best$eta,
+                                 subsample = 0.9, colsample_bytree = 0.8),
+                   data = dtrain, nrounds = best$nrounds, verbose = 0)
+test_auc["XGBoost"] <- aucpr(predict(m_xgb, X[te, ]), yte)
+
+round(test_auc, 3)
+cat(sprintf("Best ML gain over the logistic RSF on the held-out test set: +%.3f AUC-PR\n",
+            max(test_auc[-1]) - test_auc["Logit"]))
+```
+
+```{r cv-plot, echo=FALSE, fig.height=3, fig.cap="Held-out test-set AUC-PR (higher is better). Grey = published logistic RSF; blue = best ML."}
+par(mar = c(4, 4, 2.5, 1))
+cols <- c("grey70", "#a6cee3", "#a6cee3", "#a6cee3"); cols[which.max(test_auc[-1]) + 1] <- "#1f78b4"
+bp <- barplot(test_auc, col = cols, ylim = c(0, 1.12), ylab = "AUC-PR", main = "Snake occurrence: held-out test AUC-PR by model")
+text(bp, test_auc, sprintf("%.3f", test_auc), pos = 3, cex = 0.85)
+```
+
+With a larger sample and strong nonlinear responses to cover and aspect, random forest lifts AUC-PR by a
+**very large** margin over the logistic RSF — the most dramatic ecology case in the set.
+
+# Interpreting the model: importance, SHAP, and partial dependence
+
+```{r interp-fit}
+rf <- ranger(x = X, y = factor(y), num.trees = 800, probability = TRUE, importance = "permutation")
+xgb <- xgb.train(params = list(objective = "binary:logistic", max_depth = 4, eta = 0.05,
+                               subsample = 0.9, colsample_bytree = 0.8),
+                 data = xgb.DMatrix(X, label = y), nrounds = 300, verbose = 0)
+shap <- predict(xgb, X, predcontrib = TRUE)   # last column is the model bias
+shap <- shap[, colnames(X)]                    # drop the BIAS column
+```
+
+```{r imp-plot, echo=FALSE, fig.height=3.2, fig.cap="Permutation importance (left) and SHAP importance (right)."}
+par(mfrow = c(1, 2), mar = c(4, 7, 2.5, 1))
+imp_rf <- tail(sort(rf$variable.importance), 8)
+barplot(imp_rf, horiz = TRUE, las = 1, names.arg = clean(names(imp_rf)), cex.names = 0.8,
+        col = "#33a02c", main = "RF importance", xlab = "permutation importance")
+imp_sh <- tail(sort(colMeans(abs(shap))), 8)
+barplot(imp_sh, horiz = TRUE, las = 1, names.arg = clean(names(imp_sh)), cex.names = 0.8,
+        col = "#6a3d9a", main = "SHAP importance", xlab = "mean(|SHAP|)")
+```
+
+```{r beeswarm, echo=FALSE, fig.height=3.6, fig.cap="SHAP summary. Each point is one location; x = its SHAP contribution to the log-odds of use; colour = the variable's value (blue low, red high)."}
+top <- names(sort(colMeans(abs(shap)), decreasing = TRUE))[1:8]
+set.seed(1); s <- sample(nrow(shap), min(600, nrow(shap)))
+par(mar = c(4, 7, 2.5, 1))
+plot(NA, xlim = range(shap[, top]), ylim = c(0.5, length(top) + 0.5), yaxt = "n",
+     xlab = "SHAP value (log-odds of use)", ylab = "", main = "SHAP summary")
+abline(v = 0, col = "grey70"); axis(2, seq_along(top), clean(rev(top)), las = 1, cex.axis = 0.75)
+for (i in seq_along(top)) {
+  v <- rev(top)[i]
+  val <- (X[s, v] - min(X[, v])) / (max(X[, v]) - min(X[, v]))
+  points(shap[s, v], i + runif(length(s), -0.25, 0.25), pch = 16, cex = 0.5,
+         col = rgb(val, 0.15, 1 - val, 0.45))
+}
+legend("topright", c("high value", "low value"), pch = 16,
+       col = c(rgb(1, .15, 0, .8), rgb(0, .15, 1, .8)), bty = "n", cex = 0.7)
+```
+
+**Interpreting the relationships.** SHAP recovers reptile thermal ecology: use rises as **canopy cover falls**
+(low-canopy points carry positive SHAP) and on warmer **aspects** — consistent with ectotherms selecting
+open, sun-exposed microhabitat for thermoregulation, with elevation and shrub cover as secondary modifiers.
+
+```{r pdp, echo=FALSE, fig.height=3.2, fig.cap="Partial dependence (left) and SHAP dependence (right) for the most influential variable."}
+top1 <- names(sort(colMeans(abs(shap)), decreasing = TRUE))[1]
+par(mfrow = c(1, 2), mar = c(4, 4.2, 2.5, 1))
+grid <- seq(quantile(d[[top1]], .02), quantile(d[[top1]], .98), length.out = 50)
+nd <- matrix(apply(X, 2, median), nrow = 50, ncol = ncol(X), byrow = TRUE, dimnames = list(NULL, colnames(X)))
+nd[, top1] <- grid
+plot(grid, predict(m_rf, nd)$predictions[, "1"], type = "l", lwd = 2.5, col = "#1f78b4",
+     xlab = clean(top1), ylab = "P(use)", main = "Partial dependence")
+plot(X[s, top1], shap[s, top1], pch = 16, col = rgb(.42, .24, .60, .3), xlab = clean(top1),
+     ylab = "SHAP value", main = "SHAP dependence")
+lines(lowess(X[, top1], shap[, top1], f = 0.5), col = "#e31a1c", lwd = 2.5)
+abline(h = 0, lty = 2, col = "grey60")
+```
+
+# Takeaway
+
+Strong nonlinear responses to canopy and aspect give the random forest a very large AUC-PR gain over the
+logistic RSF, and SHAP lets us read the thermoregulation story directly off the model. With the Pinyon Jay,
+it shows the result is general across taxa.
+
+
+# Recommended exercises
+
+1. Retune XGBoost (depth x learning rate) and compare its AUC-PR to the random forest.
+2. Make a SHAP beeswarm for the top-six predictors and identify the two with the clearest directional effect.
+3. Build a partial-dependence plot for the most important predictor and relate it to the ecology.

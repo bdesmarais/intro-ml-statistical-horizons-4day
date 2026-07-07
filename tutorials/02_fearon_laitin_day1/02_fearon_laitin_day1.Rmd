@@ -1,0 +1,141 @@
+---
+title: "Reproduce-then-Extend — Civil-War Onset (Fearon & Laitin 2003) (Day 1)"
+author: "Intro to Machine Learning · Bruce A. Desmarais"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  pdf_document:
+    number_sections: true
+geometry: margin=1in
+fontsize: 10pt
+header-includes:
+  - \usepackage{fvextra}
+  - \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,breakanywhere,commandchars=\\\{\}}
+  - \DefineVerbatimEnvironment{verbatim}{Verbatim}{breaklines,breakanywhere}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 6.5, fig.height = 3.6, fig.align = "center")
+options(width = 82)
+library(PRROC)   # ROC and precision-recall curves
+```
+
+> **Published study.** Fearon, J. D. & Laitin, D. D. (2003). "Ethnicity, Insurgency, and Civil War."
+> *American Political Science Review* 97(1):75–90. A **logistic regression** of civil-war onset on 11
+> country-year predictors (Sambanis 2006 imputed data; Harvard Dataverse doi:10.7910/DVN/KRKWK8). Onset is a
+> **rare event** (~1.6%); this example illustrates **out-of-sample classification** and the right evaluation
+> metric for imbalanced data.
+
+# Background
+
+Fearon and Laitin ask **what conditions make civil war likely** worldwide from 1945 to 1999. Their central aim is to adjudicate between two explanations: civil war as a product of ethnic and religious **grievance**, versus civil war as a product of conditions that favor **insurgency** -- weak states, poverty, rough terrain, and populations governments cannot control. They use **logistic regression** of civil-war onset on structural covariates to test which set of factors predicts onset. The **primary conclusion** is that insurgency-favoring conditions (low GDP per capita, large population, mountainous terrain, political instability, new states) strongly predict civil war, while ethnic and religious fractionalization do **not** -- a direct challenge to the ethnic-grievance thesis.
+
+# Data and codebook
+
+**Unit of analysis:** country-year; n = 7,140 (116 civil-war onsets, ~1.6%).
+
+| Variable | Definition |
+|---|---|
+| `warstds` | civil-war onset: 1 in the first year of a new civil war **(outcome)** |
+| `warhist` | prior civil-war history in the country |
+| `ln_gdpen` | log GDP per capita (lagged one year) |
+| `lpopns` | log national population |
+| `lmtnest` | log % of the country that is mountainous terrain |
+| `ncontig` | 1 if the state has noncontiguous territory |
+| `oil` | 1 if fuel exports exceed one-third of total exports (oil exporter) |
+| `nwstate` | 1 in the first two years of a newly independent state |
+| `inst3` | political instability: a >=3-point Polity change in the prior 3 years |
+| `pol4` | Polity score (-10 autocracy to +10 democracy) |
+| `ef` | ethnolinguistic fractionalization |
+| `relfrac` | religious fractionalization |
+
+# Descriptive results
+
+```{r data}
+d <- read.csv("https://raw.githubusercontent.com/bdesmarais/intro-ml-statistical-horizons-4day/main/tutorials/02_fearon_laitin_day1/data/SambnisImp.csv")
+fl <- c("warhist", "ln_gdpen", "lpopns", "lmtnest", "ncontig", "oil", "nwstate",
+        "inst3", "pol4", "ef", "relfrac")
+d <- d[complete.cases(d[, c("warstds", fl)]), c("warstds", fl)]
+
+round(t(sapply(d, function(x) c(mean = mean(x), sd = sd(x), min = min(x), max = max(x)))), 2)
+```
+
+```{r desc-plot, fig.height=3, fig.cap="Class balance of the rare onset outcome (left) and the covariates that differ most between onset and non-onset years (right)."}
+par(mfrow = c(1, 2))
+par(mar = c(4, 4, 2.5, 1))
+barplot(table(d$warstds), names.arg = c("no onset", "onset"),
+        col = c("grey75", "#1f78b4"), main = "Outcome: warstds", ylab = "count")
+
+# standardized mean difference (onset - non-onset) for each predictor
+smd <- sapply(d[fl], function(x) (mean(x[d$warstds == 1]) - mean(x[d$warstds == 0])) / sd(x))
+smd <- tail(smd[order(abs(smd))], 8)
+par(mar = c(4, 6, 2.5, 1))
+barplot(smd, horiz = TRUE, las = 1, cex.names = 0.85,
+        col = ifelse(smd > 0, "#1f78b4", "#e31a1c"), main = "Onset vs non-onset",
+        xlab = "std. mean difference")
+abline(v = 0, col = "grey50")
+```
+
+# Reproduce the published regression
+
+```{r reproduce}
+fl_logit <- glm(warstds ~ warhist + ln_gdpen + lpopns + lmtnest + ncontig + oil +
+                  nwstate + inst3 + pol4 + ef + relfrac, data = d, family = binomial)
+summary(fl_logit)
+```
+
+**Confirmation against the published study.** The coefficients carry the signs and significance reported in
+Fearon & Laitin's Table 1: civil war is more likely in **poorer** countries (`ln_gdpen` negative), **more
+populous** ones (`lpopns` positive), **more mountainous** terrain (`lmtnest` positive), **new states**
+(`nwstate` positive) and amid **political instability** (`inst3` positive), while ethnic/religious
+fractionalization are not significant — their central claim that *insurgency conditions, not ethnic grievance,
+drive civil war*.
+
+# Out-of-sample prediction with the regression
+
+We fit on a random 70% and score the held-out 30%. With a rare outcome, accuracy is useless (predicting "no
+war" everywhere scores 98%); the honest evaluation is the **ROC** and especially the **precision-recall** curve.
+
+```{r oos}
+set.seed(2026)
+train <- sample(nrow(d), floor(0.7 * nrow(d)))
+test  <- setdiff(seq_len(nrow(d)), train)
+
+fit  <- glm(warstds ~ ., data = d[train, ], family = binomial)
+pred <- predict(fit, d[test, ], type = "response")   # predicted onset probability
+y    <- d$warstds[test]
+
+roc <- roc.curve(scores.class0 = pred[y == 1], scores.class1 = pred[y == 0], curve = TRUE)
+pr  <- pr.curve(scores.class0 = pred[y == 1], scores.class1 = pred[y == 0], curve = TRUE)
+cat(sprintf("Held-out test: %d country-years, onset base rate %.1f%%\n", length(test), 100 * mean(y)))
+cat(sprintf("  Out-of-sample ROC-AUC = %.3f\n  Out-of-sample PR-AUC  = %.3f  (a random model scores %.3f)\n",
+            roc$auc, pr$auc.integral, mean(y)))
+```
+
+```{r oos-plot, echo=FALSE, fig.height=3.4, fig.cap="Out-of-sample ROC curve (left) and precision-recall curve (right) for the held-out logit predictions."}
+par(mfrow = c(1, 2), mar = c(4.2, 4.2, 2.5, 1))
+plot(roc$curve[, 1], roc$curve[, 2], type = "l", lwd = 2, col = "#1f78b4",
+     xlab = "false positive rate", ylab = "true positive rate", main = "ROC (held-out)")
+abline(0, 1, lty = 2, col = "grey60")
+plot(pr$curve[, 1], pr$curve[, 2], type = "l", lwd = 2, col = "#33a02c",
+     xlab = "recall", ylab = "precision", main = "Precision-Recall (held-out)")
+abline(h = mean(y), lty = 2, col = "grey60")
+```
+
+The ROC-AUC looks strong (~0.8), but the **PR-AUC** is far more modest — the honest picture when only 1.6% of
+cases are onsets. This is the key evaluation lesson: *on imbalanced data, ROC-AUC flatters a model and
+precision-recall tells the truth.*
+
+# Takeaway
+
+This example illustrates **out-of-sample classification with a published regression** and the
+**evaluation-metric choice** that matters most for rare events. The Fearon–Laitin logit predicts onset above
+chance out of sample, but reporting precision–recall (not accuracy or ROC alone) is what keeps the assessment
+honest. (A later example — Gibler–Braithwaite — extends this rare-event setting with tree-based learners.)
+
+
+# Recommended exercises
+
+1. Replace the single split with stratified 5-fold CV and report mean AUC-PR (the outcome is ~1.6% positive, so use AUC-PR, not accuracy).
+2. Fit an L1-penalized logistic regression and compare its AUC-PR and retained variables to the full logit.
+3. Plot the calibration (reliability) curve of the predicted probabilities and comment on over/under-confidence.
