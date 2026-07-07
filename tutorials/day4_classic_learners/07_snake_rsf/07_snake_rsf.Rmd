@@ -55,9 +55,9 @@ predictors relate to each other. The data are loaded exactly as the reproduction
 
 ```{r data}
 d <- read.csv(paste0(
-  "https://raw.githubusercontent.com/bdesmarais/",
-  "intro-ml-statistical-horizons-4day/main/",
-  "tutorials/day4_classic_learners/07_snake_rsf/data/snake_clean.csv"))
+  "https://raw.githubusercontent.com/bdesmarais/intro",
+  "-ml-statistical-horizons-4day/main/tutorials/day4_",
+  "classic_learners/07_snake_rsf/data/snake_clean.csv"))
 preds <- setdiff(names(d), "Response")
 preds <- preds[sapply(d[preds], function(x) length(unique(x)) > 1)]
 clean <- function(v) gsub("[._]+", " ", v)   # tidy the mangled column names for labels

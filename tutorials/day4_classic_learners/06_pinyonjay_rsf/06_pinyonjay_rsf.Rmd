@@ -61,9 +61,10 @@ Pinyon Jays are a **declining bird** of the southwestern United States, and mana
 
 ```{r data}
 d <- read.csv(paste0(
-  "https://raw.githubusercontent.com/bdesmarais/",
-  "intro-ml-statistical-horizons-4day/main/",
-  "tutorials/day4_classic_learners/06_pinyonjay_rsf/data/jays_clean.csv"))
+  "https://raw.githubusercontent.com/bdesmarais/intro",
+  "-ml-statistical-horizons-4day/main/tutorials/day4_",
+  "classic_learners/06_pinyonjay_rsf/data/jays_clean.",
+  "csv"))
 
 # Predictors: keep the interpretable environmental variables and drop the sparse
 # one-hot habitat/disturbance-type dummies (unidentified in the logit).

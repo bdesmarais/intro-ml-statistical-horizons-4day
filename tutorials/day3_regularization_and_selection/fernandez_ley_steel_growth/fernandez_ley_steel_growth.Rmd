@@ -55,9 +55,10 @@ its selections line up with their BMA verdict.
 ```{r load}
 library(BMS)      # ships the exact FLS 2001 data as datafls; provides bms()
 d  <- read.csv(paste0(
-  "https://raw.githubusercontent.com/bdesmarais/",
-  "intro-ml-statistical-horizons-4day/main/",
-  "tutorials/day3_regularization_and_selection/fernandez_ley_steel_growth/data/fls_growth.csv"))   # a verbatim copy of BMS::datafls
+  "https://raw.githubusercontent.com/bdesmarais/intro",
+  "-ml-statistical-horizons-4day/main/tutorials/day3_",
+  "regularization_and_selection/fernandez_ley_steel_g",
+  "rowth/data/fls_growth.csv"))   # a verbatim copy of BMS::datafls
 y  <- d$y                          # growth of real GDP per capita, 1960-1992
 X  <- as.matrix(d[, -1])           # the 41 candidate determinants
 p  <- ncol(X); n <- nrow(X)
@@ -582,7 +583,8 @@ solves it efficiently and picks the support size by an information criterion.
 
 ```{r abess}
 library(abess)
-ab      <- abess(X, y, family = "gaussian")   # support size chosen by GIC
+keepX   <- apply(X, 2, function(z) stats::sd(z) > 0)   # guard against any constant column
+ab      <- abess(X[, keepX, drop = FALSE], y, family = "gaussian")   # support size chosen by GIC
 ab_best <- extract(ab)
 abess_support <- ab_best$support.vars
 data.frame(method = "abess (best subset)",
@@ -659,8 +661,9 @@ for (r in 1:R) {
     nm <- c("Ridge","Lasso","Elastic net")[match(a, c(0,1,0.5))]
     res[r, nm] <- rmse(yte, pr)
   }
-  ab_r <- abess(Xtr, ytr, family = "gaussian")
-  res[r,"abess"] <- rmse(yte, as.numeric(predict(ab_r, newx = Xte)))
+  keep <- apply(Xtr, 2, function(z) stats::sd(z) > 0)  # a rare 0/1 dummy can be constant in a fold
+  ab_r <- abess(Xtr[, keep, drop = FALSE], ytr, family = "gaussian")
+  res[r,"abess"] <- rmse(yte, as.numeric(predict(ab_r, newx = Xte[, keep, drop = FALSE])))
   res[r,"Mean baseline"] <- rmse(yte, mean(ytr))
 }
 oos <- data.frame(method = methods,

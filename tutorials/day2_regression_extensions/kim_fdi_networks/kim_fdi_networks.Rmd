@@ -63,9 +63,10 @@ straight-line OLS term cannot capture.
 ```{r load}
 # Data ships next to this Rmd (original Stata .dta pulled from Dataverse file id 6563740).
 .f <- tempfile(fileext=".dta"); download.file(paste0(
-  "https://raw.githubusercontent.com/bdesmarais/",
-  "intro-ml-statistical-horizons-4day/main/",
-  "tutorials/day2_regression_extensions/kim_fdi_networks/data/kim_fdi_data.dta"), .f, mode="wb", quiet=TRUE)
+  "https://raw.githubusercontent.com/bdesmarais/intro",
+  "-ml-statistical-horizons-4day/main/tutorials/day2_",
+  "regression_extensions/kim_fdi_networks/data/kim_fd",
+  "i_data.dta"), .f, mode="wb", quiet=TRUE)
 d <- read_dta(.f)
 
 # Variable renames exactly as in the posted replication script.

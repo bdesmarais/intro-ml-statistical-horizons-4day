@@ -62,9 +62,10 @@ inputs relate to *each other*.
 ```{r data}
 tmp_xlsx <- tempfile(fileext = ".xlsx")
 download.file(paste0(
-  "https://raw.githubusercontent.com/bdesmarais/",
-  "intro-ml-statistical-horizons-4day/main/",
-  "tutorials/day2_regression_extensions/09_energy_efficiency/data/ENB2012_data.xlsx"), tmp_xlsx, mode = "wb", quiet = TRUE)
+  "https://raw.githubusercontent.com/bdesmarais/intro",
+  "-ml-statistical-horizons-4day/main/tutorials/day2_",
+  "regression_extensions/09_energy_efficiency/data/EN",
+  "B2012_data.xlsx"), tmp_xlsx, mode = "wb", quiet = TRUE)
 d <- as.data.frame(read_excel(tmp_xlsx))   # data ships in the tutorial folder
 d <- d[, colSums(!is.na(d)) > 0]; d <- d[complete.cases(d), ]
 preds <- paste0("X", 1:8)

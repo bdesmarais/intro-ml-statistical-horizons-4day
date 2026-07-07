@@ -58,9 +58,10 @@ and then mean-imputing them (their Section 3.2). We replicate that exactly.
 
 ```{r load-data}
 raw <- read.csv(paste0(
-  "https://raw.githubusercontent.com/bdesmarais/",
-  "intro-ml-statistical-horizons-4day/main/",
-  "tutorials/day1_intro_and_evaluation/elaissaoui_student_grades/data/student-mat.csv"), sep = ";", stringsAsFactors = FALSE)
+  "https://raw.githubusercontent.com/bdesmarais/intro",
+  "-ml-statistical-horizons-4day/main/tutorials/day1_",
+  "intro_and_evaluation/elaissaoui_student_grades/dat",
+  "a/student-mat.csv"), sep = ";", stringsAsFactors = FALSE)
 cat("Rows x cols:", nrow(raw), "x", ncol(raw), "\n")
 cat("Outcome G3: range", paste(range(raw$G3), collapse = "-"),
     "| mean", round(mean(raw$G3), 3), "| sd", round(sd(raw$G3), 3), "\n")

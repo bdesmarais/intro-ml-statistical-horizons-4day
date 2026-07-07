@@ -65,9 +65,10 @@ composite "severe illness" endpoint), else 0.
 
 ```{r load-data}
 xlsx <- tempfile(fileext=".xlsx"); download.file(paste0(
-  "https://raw.githubusercontent.com/bdesmarais/",
-  "intro-ml-statistical-horizons-4day/main/",
-  "tutorials/day4_classic_learners/turcotte_covid_severity/data/covid_severe.xlsx"), xlsx, mode="wb", quiet=TRUE)           # local copy shipped alongside this .Rmd
+  "https://raw.githubusercontent.com/bdesmarais/intro",
+  "-ml-statistical-horizons-4day/main/tutorials/day4_",
+  "classic_learners/turcotte_covid_severity/data/covi",
+  "d_severe.xlsx"), xlsx, mode="wb", quiet=TRUE)           # local copy shipped alongside this .Rmd
 d <- as.data.frame(read_excel(xlsx))
 
 # --- Outcome: ICU admission OR death (the paper's composite) ---

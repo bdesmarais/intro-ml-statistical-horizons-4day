@@ -59,9 +59,10 @@ extend here.)
 # DWW_CPS.RData is the original file downloaded from Dataverse
 # (datafile id 4279578, ?format=original), placed next to this .Rmd.
 load(url(paste0(
-  "https://raw.githubusercontent.com/bdesmarais/",
-  "intro-ml-statistical-horizons-4day/main/",
-  "tutorials/day1_intro_and_evaluation/desposato_wang_wu_trust/data/DWW_CPS.RData")))
+  "https://raw.githubusercontent.com/bdesmarais/intro",
+  "-ml-statistical-horizons-4day/main/tutorials/day1_",
+  "intro_and_evaluation/desposato_wang_wu_trust/data/",
+  "DWW_CPS.RData")))
 predictors <- c("T", "Education", "CCP", "GovtJob", "Income2", "marriage")
 form_cent  <- as.formula(paste("TrustCent ~", paste(predictors, collapse = " + ")))
 ```

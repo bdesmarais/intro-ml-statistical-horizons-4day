@@ -41,11 +41,11 @@ block of political, discursive, and media-system controls.
 suppressMessages({
   library(haven)
 })
-stopifnot(file.exists("castelli_froio.dta"))
 .f <- tempfile(fileext=".dta"); download.file(paste0(
-  "https://raw.githubusercontent.com/bdesmarais/",
-  "intro-ml-statistical-horizons-4day/main/",
-  "tutorials/day3_regularization_and_selection/castelli_froio_farright_media/data/castelli_froio.dta"), .f, mode="wb", quiet=TRUE)
+  "https://raw.githubusercontent.com/bdesmarais/intro",
+  "-ml-statistical-horizons-4day/main/tutorials/day3_",
+  "regularization_and_selection/castelli_froio_farrig",
+  "ht_media/data/castelli_froio.dta"), .f, mode="wb", quiet=TRUE)
 d_raw <- read_dta(.f)
 
 # Build the modeling frame exactly as in the Stata do-file "full" model:

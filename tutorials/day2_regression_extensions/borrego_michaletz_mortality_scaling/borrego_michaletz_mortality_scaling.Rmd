@@ -80,13 +80,15 @@ We load the two posted CSVs and reconstruct the exact variables the authors' scr
 
 ```{r load-data}
 mort <- read.csv(paste0(
-  "https://raw.githubusercontent.com/bdesmarais/",
-  "intro-ml-statistical-horizons-4day/main/",
-  "tutorials/day2_regression_extensions/borrego_michaletz_mortality_scaling/data/mortality_data.csv"))
+  "https://raw.githubusercontent.com/bdesmarais/intro",
+  "-ml-statistical-horizons-4day/main/tutorials/day2_",
+  "regression_extensions/borrego_michaletz_mortality_",
+  "scaling/data/mortality_data.csv"))
 clim <- read.csv(paste0(
-  "https://raw.githubusercontent.com/bdesmarais/",
-  "intro-ml-statistical-horizons-4day/main/",
-  "tutorials/day2_regression_extensions/borrego_michaletz_mortality_scaling/data/climate.csv"), header = TRUE)
+  "https://raw.githubusercontent.com/bdesmarais/intro",
+  "-ml-statistical-horizons-4day/main/tutorials/day2_",
+  "regression_extensions/borrego_michaletz_mortality_",
+  "scaling/data/climate.csv"), header = TRUE)
 
 # --- exact variable construction from the authors' script ---
 names(mort)[names(mort) == "size"] <- "dbh_cm"        # stem diameter (cm)

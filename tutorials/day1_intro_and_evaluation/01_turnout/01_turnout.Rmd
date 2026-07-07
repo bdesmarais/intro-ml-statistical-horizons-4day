@@ -58,9 +58,10 @@ reproduction that follows.
 
 ```{r data}
 d <- read.delim(paste0(
-  "https://raw.githubusercontent.com/bdesmarais/",
-  "intro-ml-statistical-horizons-4day/main/",
-  "tutorials/day1_intro_and_evaluation/01_turnout/data/turnout_state.tab"))
+  "https://raw.githubusercontent.com/bdesmarais/intro",
+  "-ml-statistical-horizons-4day/main/tutorials/day1_",
+  "intro_and_evaluation/01_turnout/data/turnout_state",
+  ".tab"))
 mvars <- c("turnout", "tlness", "lcr2", "mmds", "regdifficulty", "straight", "iuse2",
            "squire", "ranney", "income2", "diversity3", "preselec", "redistrict", "year")
 d <- as.data.frame(na.omit(d[, mvars]))

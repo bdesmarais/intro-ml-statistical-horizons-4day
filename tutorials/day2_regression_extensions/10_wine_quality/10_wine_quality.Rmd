@@ -57,9 +57,10 @@ Cortez and colleagues ask whether **objective physicochemical measurements** of 
 
 ```{r data}
 url <- paste0(
-  "https://raw.githubusercontent.com/bdesmarais/",
-  "intro-ml-statistical-horizons-4day/main/",
-  "tutorials/day2_regression_extensions/10_wine_quality/data/winequality-red.csv")
+  "https://raw.githubusercontent.com/bdesmarais/intro",
+  "-ml-statistical-horizons-4day/main/tutorials/day2_",
+  "regression_extensions/10_wine_quality/data/winequa",
+  "lity-red.csv")
 d <- read.csv(url, sep = ";")
 names(d) <- make.names(names(d))
 preds <- setdiff(names(d), "quality")

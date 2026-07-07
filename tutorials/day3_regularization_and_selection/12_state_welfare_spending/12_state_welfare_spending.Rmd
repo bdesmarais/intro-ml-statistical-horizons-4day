@@ -61,9 +61,10 @@ trusted, and it is exactly these features that motivate the regularization that 
 
 ```{r data}
 d <- read.csv(paste0(
-  "https://raw.githubusercontent.com/bdesmarais/",
-  "intro-ml-statistical-horizons-4day/main/",
-  "tutorials/day3_regularization_and_selection/12_state_welfare_spending/data/state_welfare_spending.csv"))
+  "https://raw.githubusercontent.com/bdesmarais/intro",
+  "-ml-statistical-horizons-4day/main/tutorials/day3_",
+  "regularization_and_selection/12_state_welfare_spen",
+  "ding/data/state_welfare_spending.csv"))
 preds <- setdiff(names(d), c("st", "welfare_spending_percap"))
 cat(sprintf("%d states x %d predictors (p/n = %.2f)\n",
             nrow(d), length(preds), length(preds) / nrow(d)))

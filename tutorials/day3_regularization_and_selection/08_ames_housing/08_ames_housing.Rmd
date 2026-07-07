@@ -64,9 +64,10 @@ that follows is computed on the resulting data frame `d`.
 
 ```{r data}
 d <- read.delim(paste0(
-  "https://raw.githubusercontent.com/bdesmarais/",
-  "intro-ml-statistical-horizons-4day/main/",
-  "tutorials/day3_regularization_and_selection/08_ames_housing/data/AmesHousing.txt"),
+  "https://raw.githubusercontent.com/bdesmarais/intro",
+  "-ml-statistical-horizons-4day/main/tutorials/day3_",
+  "regularization_and_selection/08_ames_housing/data/",
+  "AmesHousing.txt"),
                 stringsAsFactors = FALSE, check.names = TRUE)
 feats <- c("Overall.Qual", "Gr.Liv.Area", "Total.Bsmt.SF", "Garage.Cars", "Year.Built",
            "Year.Remod.Add", "Full.Bath", "TotRms.AbvGrd", "Lot.Area", "Fireplaces")
@@ -186,9 +187,10 @@ is the well-known Ames pattern:
 
 ```{r missing}
 draw <- read.delim(paste0(
-  "https://raw.githubusercontent.com/bdesmarais/",
-  "intro-ml-statistical-horizons-4day/main/",
-  "tutorials/day3_regularization_and_selection/08_ames_housing/data/AmesHousing.txt"),
+  "https://raw.githubusercontent.com/bdesmarais/intro",
+  "-ml-statistical-horizons-4day/main/tutorials/day3_",
+  "regularization_and_selection/08_ames_housing/data/",
+  "AmesHousing.txt"),
                    stringsAsFactors = FALSE, check.names = TRUE)
 na_ct <- sapply(draw, function(x) sum(is.na(x)))
 na_ct <- sort(na_ct[na_ct > 0], decreasing = TRUE)

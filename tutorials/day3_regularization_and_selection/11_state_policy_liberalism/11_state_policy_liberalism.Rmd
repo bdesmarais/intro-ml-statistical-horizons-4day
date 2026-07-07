@@ -69,9 +69,10 @@ analysis operates on the loaded data frame `d`.
 
 ```{r data}
 d <- read.csv(paste0(
-  "https://raw.githubusercontent.com/bdesmarais/",
-  "intro-ml-statistical-horizons-4day/main/",
-  "tutorials/day3_regularization_and_selection/11_state_policy_liberalism/data/state_policy_liberalism.csv"))
+  "https://raw.githubusercontent.com/bdesmarais/intro",
+  "-ml-statistical-horizons-4day/main/tutorials/day3_",
+  "regularization_and_selection/11_state_policy_liber",
+  "alism/data/state_policy_liberalism.csv"))
 preds <- setdiff(names(d), c("st", "pollib_median"))
 cat(sprintf("%d states x %d predictors (p/n = %.2f)\n",
             nrow(d), length(preds), length(preds) / nrow(d)))

@@ -61,9 +61,10 @@ model-agnostic **interpretation** (permutation importance and partial dependence
 # ---- Load raw survey and reproduce the authors' cleaning pipeline verbatim ----
 # (Column recodes copied from the authors' Cleaning_Script.R.)
 raw <- {.f <- tempfile(fileext=".sav"); download.file(paste0(
-  "https://raw.githubusercontent.com/bdesmarais/",
-  "intro-ml-statistical-horizons-4day/main/",
-  "tutorials/day4_classic_learners/lyon_malik_policing/data/LyonMalik_Raw_Data.sav"), .f, mode="wb", quiet=TRUE); read_sav(.f)}
+  "https://raw.githubusercontent.com/bdesmarais/intro",
+  "-ml-statistical-horizons-4day/main/tutorials/day4_",
+  "classic_learners/lyon_malik_policing/data/LyonMali",
+  "k_Raw_Data.sav"), .f, mode="wb", quiet=TRUE); read_sav(.f)}
 raw <- suppressWarnings(as.data.frame(lapply(raw, function(x) as.numeric(x))))
 
 d <- raw %>% mutate(

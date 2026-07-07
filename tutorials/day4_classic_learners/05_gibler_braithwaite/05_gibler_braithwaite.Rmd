@@ -58,9 +58,10 @@ Gibler and Braithwaite ask why a small fraction of **militarized interstate disp
 
 ```{r data}
 d <- read.csv(paste0(
-  "https://raw.githubusercontent.com/bdesmarais/",
-  "intro-ml-statistical-horizons-4day/main/",
-  "tutorials/day4_classic_learners/05_gibler_braithwaite/data/gb20.csv"))
+  "https://raw.githubusercontent.com/bdesmarais/intro",
+  "-ml-statistical-horizons-4day/main/tutorials/day4_",
+  "classic_learners/05_gibler_braithwaite/data/gb20.c",
+  "sv"))
 preds <- setdiff(names(d), "fatal")
 preds <- preds[sapply(d[preds], function(x) length(unique(x)) > 1)]
 clean <- function(v) gsub("[._]+", " ", v)   # tidy names for plots
