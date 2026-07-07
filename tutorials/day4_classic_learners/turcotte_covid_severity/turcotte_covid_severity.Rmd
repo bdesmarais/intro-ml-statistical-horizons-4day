@@ -419,7 +419,7 @@ pub <- data.frame(
 knitr::kable(pub, row.names = FALSE, booktabs = TRUE,
              col.names = c("Term","Published OR","Published 95% CI","Published p",
                            "Reproduced OR","Reproduced p"),
-             caption = "Reproduction check: published (Dennis et al., Table 4) vs. reproduced.")
+             caption = "Reproduction check: published (Turcotte et al., Table 4) vs. reproduced.")
 ```
 
 The reproduced odds ratios, confidence intervals, and *p*-values match the published Table 4 to

@@ -79,6 +79,13 @@ d <- d %>% rename(
   Chaebol                   = chaebol
 )
 
+# Firm size = market capitalisation in millions of USD (Kim 2023). The posted
+# Dataverse .dta stores it on a 1/10 scale (mean 0.136, max 13.79); the paper's
+# summary statistics and Table 1 use millions of USD (mean 1.361, max 137.95).
+# Restore the published scale so the reproduced Firm_Size slope matches Table 1
+# (0.136 on this scale, vs. 1.363 on the shrunken scale -- identical t-stat).
+d$Firm_Size <- d$Firm_Size * 10
+
 # Common modeling frame used throughout: same predictors as Table 1 model 4, listwise complete.
 vars <- c("FDIProjects_Amount", "Board_Ties_to_State_Banks", "Firm_Size",
           "Debt_Ratio", "Profitability", "Chaebol", "sic_category")
@@ -495,7 +502,7 @@ m4 <- lm(FDIProjects_Amount ~ Board_Ties_to_State_Banks + Firm_Size + Debt_Ratio
 gc <- function(m, term) unname(round(coef(summary(m))[term, "Estimate"], 3))
 
 # Published reference values (authors' replication-script output for Table 1, model 4).
-pub <- c(Board_Ties_to_State_Banks = 0.548, Firm_Size = 1.363,
+pub <- c(Board_Ties_to_State_Banks = 0.548, Firm_Size = 0.136,
          Debt_Ratio = 0.542, Profitability = 0.002, Chaebol = 1.023)
 
 match_tab <- data.frame(
@@ -528,7 +535,7 @@ kable(across, caption = "Reproduced Table 1 across specifications (key terms).",
 
 The board-ties coefficient is positive and significant throughout ($\hat\beta = 0.548$,
 $p = 0.017$ in the full model), and firm size is the dominant predictor
-($\hat\beta = 1.36$). **The reproduction is exact.** Everything below extends this same
+($\hat\beta = 0.136$). **The reproduction is exact.** Everything below extends this same
 model without disturbing it.
 
 # OLS setup and multiple-regression interpretation
@@ -559,9 +566,9 @@ kable(ct, booktabs = TRUE,
 * **Board ties to state banks** ($+0.548$): a firm whose board is tied to a state bank has,
   on average, a logged FDI amount 0.55 higher than an otherwise-identical firm without such
   ties — the paper's headline result.
-* **Firm size** ($+1.363$): the dominant term. Each one-unit increase in the (scaled)
-  market-cap measure is associated with a 1.36 rise in logged FDI, controlling for the rest.
-  We will show below this straight-line slope hides a strong curvature.
+* **Firm size** ($+0.136$): the dominant term. Each one-unit (one-million-USD) increase in
+  the market-cap measure is associated with a 0.136 rise in logged FDI, controlling for the
+  rest. We will show below this straight-line slope hides a strong curvature.
 * The remaining controls (debt ratio, profitability, chaebol status, and nine SIC-industry
   dummies) are partialled out of every coefficient above.
 
@@ -863,7 +870,7 @@ ggplot(cv_plot, aes(`Mean function`, `CV RMSE`)) +
 
 The published OLS result reproduces **exactly**: board ties to state banks raise firm FDI
 ($\hat\beta = 0.548$, $p = 0.017$), with firm size the dominant driver
-($\hat\beta = 1.363$). Reading that model as a proper multiple regression, each slope is a
+($\hat\beta = 0.136$). Reading that model as a proper multiple regression, each slope is a
 partial effect; but its residual diagnostics are unambiguous — non-flat residuals-vs-fitted,
 a heavy-tailed QQ plot, clear heteroscedasticity (so we report HC3 robust SEs), and a few
 influential firms. The logistic / MLE aside re-expresses the analysis on a binary

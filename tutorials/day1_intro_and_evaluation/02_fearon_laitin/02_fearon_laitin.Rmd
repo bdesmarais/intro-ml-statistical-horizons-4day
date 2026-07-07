@@ -22,9 +22,9 @@ library(PRROC)   # ROC and precision-recall curves
 
 > **Published study.** Fearon, J. D. & Laitin, D. D. (2003). "Ethnicity, Insurgency, and Civil War."
 > *American Political Science Review* 97(1):75–90. A **logistic regression** of civil-war onset on 11
-> country-year predictors (Sambanis 2006 imputed data; Harvard Dataverse doi:10.7910/DVN/KRKWK8). Onset is a
-> **rare event** (~1.6%); this example illustrates **out-of-sample classification** and the right evaluation
-> metric for imbalanced data.
+> country-year predictors, fit on the authors' own replication file `repdata.dta` (Harvard Dataverse
+> hdl:1902.1/15494). Onset is a **rare event** (~1.7%); this example illustrates **out-of-sample
+> classification** and the right evaluation metric for imbalanced data.
 
 # Background
 
@@ -32,22 +32,28 @@ Fearon and Laitin ask **what conditions make civil war likely** worldwide from 1
 
 # Data and codebook
 
-**Unit of analysis:** country-year; n = 7,140 (116 civil-war onsets, ~1.6%).
+**Unit of analysis:** country-year; ~6,326 estimation rows (105 civil-war onsets, ~1.7%). These are the
+variable names as they appear in Fearon & Laitin's own `repdata.dta`.
 
 | Variable | Definition |
 |---|---|
-| `warstds` | civil-war onset: 1 in the first year of a new civil war **(outcome)** |
-| `warhist` | prior civil-war history in the country |
-| `ln_gdpen` | log GDP per capita (lagged one year) |
-| `lpopns` | log national population |
+| `onset` | civil-war onset: 1 in the first year of a new civil war **(outcome)** |
+| `warl` | prior civil-war history (a war was ongoing in the country the previous year) |
+| `gdpenl` | per-capita income, lagged one year (thousands of \$; **not** logged) |
+| `lpopl1` | log national population (lagged) |
 | `lmtnest` | log % of the country that is mountainous terrain |
 | `ncontig` | 1 if the state has noncontiguous territory |
-| `oil` | 1 if fuel exports exceed one-third of total exports (oil exporter) |
+| `Oil` | 1 if fuel exports exceed one-third of total exports (oil exporter) |
 | `nwstate` | 1 in the first two years of a newly independent state |
-| `inst3` | political instability: a >=3-point Polity change in the prior 3 years |
-| `pol4` | Polity score (-10 autocracy to +10 democracy) |
-| `ef` | ethnolinguistic fractionalization |
+| `instab` | political instability: a >=3-point Polity change in the prior 3 years |
+| `polity2l` | Polity score, lagged (-10 autocracy to +10 democracy) |
+| `ethfrac` | ethnolinguistic fractionalization |
 | `relfrac` | religious fractionalization |
+
+> **On the outcome coding.** `repdata.dta` codes `onset` as 0/1 for country-years at risk, plus a special
+> value `4` marking a single year that is neither at risk nor a clean onset (an ongoing-war artifact).
+> Fearon & Laitin's Table 1 drops that row, so we filter `onset != 4` before modeling — this is what
+> reproduces their N and coefficients exactly.
 
 # Descriptive analysis
 
@@ -61,57 +67,61 @@ tell us which evaluation metrics and modeling choices that fact forces on us.
 d <- read.csv(paste0(
   "https://raw.githubusercontent.com/bdesmarais/intro",
   "-ml-statistical-horizons-4day/main/tutorials/day1_",
-  "intro_and_evaluation/02_fearon_laitin/data/Sambnis",
-  "Imp.csv"))
-fl <- c("warhist", "ln_gdpen", "lpopns", "lmtnest", "ncontig", "oil", "nwstate",
-        "inst3", "pol4", "ef", "relfrac")
-d <- d[complete.cases(d[, c("warstds", fl)]), c("warstds", fl)]
+  "intro_and_evaluation/02_fearon_laitin/data/repdata",
+  ".csv"))
+d <- d[d$onset != 4, ]                 # drop the ongoing-war artifact row (FL Table 1)
+fl <- c("warl", "gdpenl", "lpopl1", "lmtnest", "ncontig", "Oil", "nwstate",
+        "instab", "polity2l", "ethfrac", "relfrac")
+d <- d[complete.cases(d[, c("onset", fl)]), c("onset", fl)]
 ```
 
 ## Dataset and provenance
 
-The data are the Sambanis (2006) replication of Fearon & Laitin (2003), distributed as
-a **multiply-imputed** country-year panel on the Harvard Dataverse
-(doi:10.7910/DVN/KRKWK8). The **unit of analysis is a country-year** spanning 1945–1999;
-after restricting to the outcome and the eleven Table-1 covariates we retain
-`r nrow(d)` complete country-years. The outcome `warstds` is the **onset** of a new
-civil war (coded 1 only in the war's first year), so the sample is dominated by
+The data are Fearon & Laitin's **own** replication file `repdata.dta`, distributed on the
+Harvard Dataverse (hdl:1902.1/15494) and used to produce their published Table 1. The
+**unit of analysis is a country-year** spanning 1945–1999; after dropping the
+ongoing-war artifact row (`onset == 4`) and restricting to the outcome and the eleven
+Table-1 covariates on complete cases we retain `r nrow(d)` country-years — matching the
+N of about 6,327 in the published estimation sample. The outcome `onset` is the **onset** of a
+new civil war (coded 1 only in the war's first year), so the sample is dominated by
 peace-years and onsets are rare by construction.
 
 ```{r dims}
 cat(sprintf("rows (country-years): %d\n", nrow(d)))
 cat(sprintf("columns: 1 outcome + %d predictors\n", length(fl)))
 cat(sprintf("civil-war onsets: %d  (base rate %.2f%%)\n",
-            sum(d$warstds), 100 * mean(d$warstds)))
+            sum(d$onset), 100 * mean(d$onset)))
 ```
 
-A subtlety worth flagging up front: three nominally binary indicators
-(`ncontig`, `nwstate`, `inst3`) were **imputed**, so although they range on \([0,1]\)
-they take fractional values for the ~9–11% of rows that were filled in — we treat them
-as continuous \([0,1]\) scores below, not clean dummies.
+Unlike the multiply-imputed Sambanis (2006) redistribution of these data, the authors'
+own file carries **genuine missingness** in a few covariates (chiefly per-capita income
+and population lags). Taking complete cases — exactly what `glm` does by default — is
+what reproduces Fearon & Laitin's N and coefficients, so we do the listwise deletion
+explicitly and up front.
 
 ```{r roles-tbl}
 roles <- data.frame(
-  variable = c("warstds","warhist","ln_gdpen","lpopns","lmtnest","ncontig",
-               "oil","nwstate","inst3","pol4","ef","relfrac"),
+  variable = c("onset","warl","gdpenl","lpopl1","lmtnest","ncontig",
+               "Oil","nwstate","instab","polity2l","ethfrac","relfrac"),
   role = c("outcome", rep("predictor", 11)),
   type = c("binary","binary","continuous","continuous","continuous",
-           "imputed [0,1]","binary","imputed [0,1]","imputed [0,1]",
+           "binary","binary","binary","binary",
            "continuous","continuous","continuous"),
   description = c(
-    "civil-war onset (1 = first war-year)","prior civil-war history",
-    "log GDP per capita (lagged)","log population","log % mountainous terrain",
+    "civil-war onset (1 = first war-year)","prior war (ongoing last year)",
+    "per-capita income, lagged ($000s)","log population (lagged)",
+    "log % mountainous terrain",
     "noncontiguous territory","oil exporter (fuel > 1/3 exports)",
     "new state (first two years)","political instability (>=3 Polity change)",
-    "Polity score (-10..+10)","ethnolinguistic fractionalization",
+    "Polity score, lagged (-10..+10)","ethnolinguistic fractionalization",
     "religious fractionalization"))
 knitr::kable(roles, caption = "Variable dictionary: outcome and predictors.")
 ```
 
 ## The outcome in depth
 
-`warstds` is binary, so its "distribution" is a **base rate**: onsets occur in only
-`r sprintf("%.2f%%", 100 * mean(d$warstds))` of country-years. The stats table below
+`onset` is binary, so its "distribution" is a **base rate**: onsets occur in only
+`r sprintf("%.2f%%", 100 * mean(d$onset))` of country-years. The stats table below
 reports it as a 0/1 variable; for a Bernoulli variable the mean *is* the base rate and
 the (positive) skew and heavy kurtosis simply restate how lopsided the classes are.
 
@@ -123,19 +133,19 @@ sstat <- function(x) {
     IQR = q[[3]] - q[[1]], skew = e1071::skewness(x),
     kurt = e1071::kurtosis(x))
 }
-round(t(sapply(d["warstds"], sstat)), 3)
+round(t(sapply(d["onset"], sstat)), 3)
 ```
 
-```{r outcome-plot, fig.height=2.9, fig.cap="Class balance of the rare onset outcome. Peace-years outnumber onsets roughly 60-to-1, so a model that always predicts 'no war' is 98.4% accurate yet useless."}
+```{r outcome-plot, fig.height=2.9, fig.cap="Class balance of the rare onset outcome. Peace-years outnumber onsets roughly 60-to-1, so a model that always predicts 'no war' is over 98% accurate yet useless."}
 par(mar = c(4, 4.5, 2.5, 1))
-bp <- barplot(table(d$warstds), names.arg = c("no onset", "onset"),
+bp <- barplot(table(d$onset), names.arg = c("no onset", "onset"),
               col = c("grey75", "#1f78b4"), border = "white",
-              main = "Outcome: warstds (base rate 1.6%)", ylab = "country-years")
-text(bp, table(d$warstds), labels = table(d$warstds), pos = 3, xpd = NA, cex = .9)
+              main = "Outcome: onset (base rate ~1.7%)", ylab = "country-years")
+text(bp, table(d$onset), labels = table(d$onset), pos = 3, xpd = NA, cex = .9)
 ```
 
-**Implication for evaluation.** With a 1.6% base rate, **accuracy is meaningless** — the
-"always predict peace" baseline already scores 98.4%. Class imbalance is exactly why the
+**Implication for evaluation.** With a ~1.7% base rate, **accuracy is meaningless** — the
+"always predict peace" baseline already scores over 98%. Class imbalance is exactly why the
 prediction section below reports the **ROC** and, more honestly, the **precision-recall**
 curve, whose no-skill baseline is the base rate itself. No transform applies to a binary
 outcome; the modeling response to rarity is metric choice (and, in extensions, resampling
@@ -156,7 +166,7 @@ psum <- function(x) {
 round(t(sapply(d[fl], psum)), 3)
 ```
 
-```{r pred-hist, fig.height=4.6, fig.cap="Univariate distributions of the eleven predictors. Logged economic/terrain variables are roughly symmetric; the imputed indicators (ncontig, nwstate, inst3) and oil/warhist pile up at 0."}
+```{r pred-hist, fig.height=4.6, fig.cap="Univariate distributions of the eleven predictors. Logged terrain/population variables are roughly symmetric; the binary indicators (ncontig, nwstate, instab, Oil, warl) pile up at 0, and raw per-capita income (gdpenl) is strongly right-skewed."}
 library(ggplot2); library(tidyr)
 long <- pivot_longer(d[fl], everything(), names_to = "var",
                      values_to = "value")
@@ -168,8 +178,8 @@ ggplot(long, aes(value)) +
   theme_bw(base_size = 8)
 ```
 
-The truly binary predictors `warhist` (prior war) and `oil` (oil exporter) are best read
-as frequency tables:
+The clean binary predictors `warl` (prior war), `Oil` (oil exporter), `ncontig`,
+`nwstate` and `instab` are best read as frequency tables:
 
 ```{r binary-freq}
 bin_tab <- function(v) {
@@ -177,40 +187,44 @@ bin_tab <- function(v) {
   data.frame(variable = v, n_0 = tb[[1]], n_1 = tb[[2]],
              pct_1 = round(100 * tb[[2]] / sum(tb), 1))
 }
-knitr::kable(do.call(rbind, lapply(c("warhist", "oil"), bin_tab)),
+knitr::kable(do.call(rbind, lapply(
+  c("warl", "Oil", "ncontig", "nwstate", "instab"), bin_tab)),
              row.names = FALSE,
-             caption = "Frequency of the two clean binary predictors.")
+             caption = "Frequency of the clean binary predictors.")
 ```
 
-**Read-out.** The logged variables (`ln_gdpen`, `lpopns`, `lmtnest`) are close to
-symmetric — logging has already tamed the raw right-skew of income, population and
-terrain, which is why the published model uses them on the log scale. `pol4` (Polity) is
-bimodal, clustering at the autocratic and democratic poles. `ef`/`relfrac` are bounded
-fractionalization indices on \([0,1]\). About a fifth of country-years carry a prior-war
-history and roughly a quarter are oil exporters.
+**Read-out.** The logged variables (`lpopl1`, `lmtnest`) are close to symmetric — logging
+has already tamed the raw right-skew of population and terrain. Per-capita income
+(`gdpenl`) is left on its **raw** \$000s scale here, exactly as in the published Table 1,
+and is heavily right-skewed. `polity2l` (Polity) is bimodal, clustering at the autocratic
+and democratic poles. `ethfrac`/`relfrac` are bounded fractionalization indices on
+\([0,1]\). A small share of country-years follow a war year or a new-state spell, and
+roughly a sixth are oil exporters.
 
 ## Missing-data analysis
 
-Because the file is a completed multiple imputation, there are essentially **no missing
-cells** in the modeling columns — the imputation is precisely how Sambanis handled the
-extensive missingness in the raw Fearon–Laitin covariates.
+We already applied listwise deletion in the data-load step, so the modeling frame `d` is
+complete by construction — the table below simply confirms there are no missing cells
+left in the columns we model. The genuine missingness in the raw file (a few hundred
+country-years lacking lagged income or population) was dropped there, which is exactly the
+default `glm` behavior that reproduces Fearon & Laitin's estimation sample.
 
 ```{r missing}
 miss <- data.frame(
-  variable = c("warstds", fl),
-  n_missing = sapply(d[c("warstds", fl)], function(x) sum(is.na(x))),
-  pct_missing = round(100 * sapply(d[c("warstds", fl)],
+  variable = c("onset", fl),
+  n_missing = sapply(d[c("onset", fl)], function(x) sum(is.na(x))),
+  pct_missing = round(100 * sapply(d[c("onset", fl)],
                       function(x) mean(is.na(x))), 2))
 cat(sprintf("complete cases: %d of %d (%.1f%%)\n",
             sum(complete.cases(d)), nrow(d),
             100 * mean(complete.cases(d))))
 knitr::kable(miss, row.names = FALSE,
-             caption = "Missingness by variable (post-imputation).")
+             caption = "Missingness by variable (after listwise deletion).")
 ```
 
-The reproduction takes complete cases (a no-op here), so the imputation's uncertainty is
-not propagated — a known simplification worth naming: the standard errors below treat the
-imputed values as observed.
+Listwise deletion is a simplification worth naming: country-years dropped for missing
+income or population are assumed missing-at-random, and the standard errors below make no
+adjustment for the deletion. This matches the published model, which does the same.
 
 ## Bivariate relationships with the outcome
 
@@ -220,7 +234,7 @@ difference (Cohen's \(d\)), and a two-sample \(t\)-test \(p\)-value.
 
 ```{r bivar-tbl}
 biv <- t(sapply(fl, function(v) {
-  x1 <- d[[v]][d$warstds == 1]; x0 <- d[[v]][d$warstds == 0]
+  x1 <- d[[v]][d$onset == 1]; x0 <- d[[v]][d$onset == 0]
   sp <- sqrt(((length(x1) - 1) * var(x1) +
               (length(x0) - 1) * var(x0)) /
              (length(x1) + length(x0) - 2))
@@ -244,7 +258,7 @@ abline(v = 0, col = "grey50")
 The largest separations are exactly the **insurgency-favoring** conditions: onset years
 have **lower GDP per capita**, **larger populations**, **more mountainous terrain**, more
 **prior-war history** and more **instability**. Ethnolinguistic and religious
-fractionalization (`ef`, `relfrac`) barely move — the descriptive foreshadowing of
+fractionalization (`ethfrac`, `relfrac`) barely move — the descriptive foreshadowing of
 Fearon & Laitin's headline null on ethnic grievance.
 
 ## Multivariate structure and collinearity
@@ -286,22 +300,43 @@ independent information and the logit coefficients below are individually identi
 
 **Descriptive verdict.** The picture is a **highly imbalanced binary outcome** whose
 onset years separate cleanly on insurgency conditions but not on ethnic grievance, over
-a clean, low-collinearity, fully-imputed design. That combination is what motivates the
+a clean, low-collinearity design. That combination is what motivates the
 choices ahead: fit the published logit for the explanatory claim, then evaluate its
 *predictions* out of sample with **precision-recall**, not accuracy.
 
 # Reproduce the published regression
 
 ```{r reproduce}
-fl_logit <- glm(warstds ~ warhist + ln_gdpen + lpopns + lmtnest + ncontig + oil +
-                  nwstate + inst3 + pol4 + ef + relfrac, data = d, family = binomial)
+fl_logit <- glm(onset ~ warl + gdpenl + lpopl1 + lmtnest + ncontig + Oil +
+                  nwstate + instab + polity2l + ethfrac + relfrac,
+                data = d, family = binomial)
 summary(fl_logit)
 ```
 
+**Side-by-side with the published Table 1, Model 1.** Fearon & Laitin (2003) report the
+"Civil War" logit in the first column of their Table 1. We line up our estimates against
+the published coefficients below; every sign matches and every magnitude is
+rounding-close.
+
+```{r reproduce-compare}
+published <- c(warl = -0.954, gdpenl = -0.344, lpopl1 = 0.263, lmtnest = 0.219,
+               ncontig = 0.443, Oil = 0.858, nwstate = 1.709, instab = 0.618,
+               polity2l = 0.021, ethfrac = 0.166, relfrac = 0.285)
+rep_coef <- coef(fl_logit)[names(published)]
+cmp <- data.frame(
+  predictor  = names(published),
+  reproduced = round(rep_coef, 3),
+  published  = published,
+  difference = round(rep_coef - published, 3))
+knitr::kable(cmp, row.names = FALSE,
+             caption = "Reproduced vs. published Fearon & Laitin (2003) Table 1, Model 1.")
+cat(sprintf("estimation N = %d (published sample N = 6327)\n", length(fl_logit$y)))
+```
+
 **Confirmation against the published study.** The coefficients carry the signs and significance reported in
-Fearon & Laitin's Table 1: civil war is more likely in **poorer** countries (`ln_gdpen` negative), **more
-populous** ones (`lpopns` positive), **more mountainous** terrain (`lmtnest` positive), **new states**
-(`nwstate` positive) and amid **political instability** (`inst3` positive), while ethnic/religious
+Fearon & Laitin's Table 1: civil war is more likely in **poorer** countries (`gdpenl` negative), **more
+populous** ones (`lpopl1` positive), **more mountainous** terrain (`lmtnest` positive), **new states**
+(`nwstate` positive) and amid **political instability** (`instab` positive), while ethnic/religious
 fractionalization are not significant — their central claim that *insurgency conditions, not ethnic grievance,
 drive civil war*.
 
@@ -315,9 +350,9 @@ set.seed(2026)
 train <- sample(nrow(d), floor(0.7 * nrow(d)))
 test  <- setdiff(seq_len(nrow(d)), train)
 
-fit  <- glm(warstds ~ ., data = d[train, ], family = binomial)
+fit  <- glm(onset ~ ., data = d[train, ], family = binomial)
 pred <- predict(fit, d[test, ], type = "response")   # predicted onset probability
-y    <- d$warstds[test]
+y    <- d$onset[test]
 
 roc <- roc.curve(scores.class0 = pred[y == 1], scores.class1 = pred[y == 0], curve = TRUE)
 pr  <- pr.curve(scores.class0 = pred[y == 1], scores.class1 = pred[y == 0], curve = TRUE)
@@ -336,7 +371,7 @@ plot(pr$curve[, 1], pr$curve[, 2], type = "l", lwd = 2, col = "#33a02c",
 abline(h = mean(y), lty = 2, col = "grey60")
 ```
 
-The ROC-AUC looks strong (~0.8), but the **PR-AUC** is far more modest — the honest picture when only 1.6% of
+The ROC-AUC looks strong (~0.8), but the **PR-AUC** is far more modest — the honest picture when only ~1.7% of
 cases are onsets. This is the key evaluation lesson: *on imbalanced data, ROC-AUC flatters a model and
 precision-recall tells the truth.*
 
@@ -350,6 +385,6 @@ honest. (A later example — Gibler–Braithwaite — extends this rare-event se
 
 # Recommended exercises
 
-1. Replace the single split with stratified 5-fold CV and report mean AUC-PR (the outcome is ~1.6% positive, so use AUC-PR, not accuracy).
+1. Replace the single split with stratified 5-fold CV and report mean AUC-PR (the outcome is ~1.7% positive, so use AUC-PR, not accuracy).
 2. Fit an L1-penalized logistic regression and compare its AUC-PR and retained variables to the full logit.
 3. Plot the calibration (reliability) curve of the predicted probabilities and comment on over/under-confidence.
