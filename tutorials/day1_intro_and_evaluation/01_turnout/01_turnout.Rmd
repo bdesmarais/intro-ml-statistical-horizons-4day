@@ -9,8 +9,8 @@ geometry: margin=1in
 fontsize: 10pt
 header-includes:
   - \usepackage{fvextra}
-  - \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,breakanywhere,commandchars=\\\{\}}
-  - \DefineVerbatimEnvironment{verbatim}{Verbatim}{breaklines,breakanywhere}
+  - \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+  - \DefineVerbatimEnvironment{verbatim}{Verbatim}{breaklines}
 ---
 
 ```{r setup, include=FALSE}
@@ -49,33 +49,249 @@ Kuhlmann and Lewis ask whether **legislative term limits shape voter turnout** i
 | `redistrict` | 1 if districts were newly redrawn (post-redistricting) |
 | `year` | election year |
 
-# Descriptive results
+# Descriptive analysis
+
+Before modeling, we profile the data thoroughly: the sample, the outcome, the
+predictors one at a time, missingness, each predictor's bivariate link to
+turnout, and the collinearity structure. This EDA motivates every choice in the
+reproduction that follows.
 
 ```{r data}
-d <- read.delim("https://raw.githubusercontent.com/bdesmarais/intro-ml-statistical-horizons-4day/main/tutorials/day1_intro_and_evaluation/01_turnout/data/turnout_state.tab")
+d <- read.delim(paste0(
+  "https://raw.githubusercontent.com/bdesmarais/",
+  "intro-ml-statistical-horizons-4day/main/",
+  "tutorials/day1_intro_and_evaluation/01_turnout/data/turnout_state.tab"))
 mvars <- c("turnout", "tlness", "lcr2", "mmds", "regdifficulty", "straight", "iuse2",
            "squire", "ranney", "income2", "diversity3", "preselec", "redistrict", "year")
 d <- as.data.frame(na.omit(d[, mvars]))
 preds <- setdiff(mvars, "turnout")
-
-# descriptive statistics
-round(t(sapply(d, function(x) c(mean = mean(x), sd = sd(x), min = min(x), max = max(x)))), 2)
 ```
 
-```{r desc-plot, fig.height=3, fig.cap="Turnout distribution (left) and each predictor's correlation with turnout (right)."}
-par(mfrow = c(1, 2))
-par(mar = c(4, 4, 2.5, 1))
-hist(d$turnout, breaks = 25, col = "#a6cee3", border = "white", main = "Outcome: turnout",
-     xlab = "turnout (%)")
+```{r eda-setup}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(e1071)
+theme_set(theme_minimal(base_size = 9))
 
-# correlation of each predictor with turnout
-cors <- sort(sapply(d[preds], function(x) cor(x, d$turnout)))
-par(mar = c(4, 8, 2.5, 1))
-barplot(cors, horiz = TRUE, las = 1, cex.names = 0.8,
-        col = ifelse(cors > 0, "#1f78b4", "#e31a1c"), main = "Correlation with turnout",
-        xlab = "correlation")
-abline(v = 0, col = "grey50")
+binvars <- c("straight", "preselec", "redistrict")   # 0/1 indicators
+numpred  <- setdiff(preds, binvars)                  # continuous predictors
 ```
+
+## Dataset and provenance
+
+The **unit of analysis** is a U.S. state lower-chamber legislative election (a
+state-year). After restricting to the modeling variables and dropping incomplete
+rows we have **n = `r nrow(d)`** state-years and **`r length(mvars)`** variables:
+one continuous outcome (`turnout`), `r length(numpred)` continuous predictors,
+and `r length(binvars)` binary indicators. The data are Kuhlmann & Lewis's
+replication file (UNC Dataverse `doi:10.15139/S3/POGNLC`), assembling state
+turnout with institutional and demographic covariates across recent election
+cycles.
+
+```{r dict, echo=FALSE}
+dict <- data.frame(
+  variable = mvars,
+  role = c("outcome", rep("predictor", length(preds))),
+  type = c("continuous", "continuous", "continuous", "continuous", "continuous",
+           "binary", "continuous", "continuous", "continuous", "continuous",
+           "continuous", "binary", "binary", "continuous"),
+  description = c(
+    "lower-chamber turnout, % of voting-age population",
+    "term-limitedness (strength/bindingness of limits)",
+    "log legislator-to-citizen ratio (per 100k)",
+    "share of seats from multimember districts",
+    "registration closing date (days before election)",
+    "1 = straight-party-ticket voting offered",
+    "log number of ballot initiatives",
+    "Squire index of legislative professionalism",
+    "Ranney index of interparty competition",
+    "per-capita income ($1000s)",
+    "Herfindahl index of racial/ethnic diversity",
+    "1 = presidential-election year",
+    "1 = newly redrawn (post-redistricting)",
+    "election year"))
+knitr::kable(dict, caption = "Variable dictionary: role, type, and coding.")
+```
+
+## The outcome in depth
+
+```{r outcome-stats, echo=FALSE}
+y <- d$turnout
+ostat <- data.frame(
+  n = length(y), mean = mean(y), sd = sd(y), min = min(y),
+  Q1 = quantile(y, .25), median = median(y), Q3 = quantile(y, .75),
+  max = max(y), IQR = IQR(y), skew = skewness(y), kurt = kurtosis(y))
+knitr::kable(round(ostat, 2), row.names = FALSE,
+             caption = "Turnout (%): summary statistics.")
+```
+
+```{r outcome-plot, echo=FALSE, fig.height=2.8, fig.cap="Distribution of state lower-chamber turnout, with density overlay and mean (dashed)."}
+ggplot(d, aes(turnout)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 30,
+                 fill = "#a6cee3", colour = "white") +
+  geom_density(colour = "#1f78b4", linewidth = 0.8) +
+  geom_vline(xintercept = mean(y), linetype = 2, colour = "#e31a1c") +
+  labs(x = "turnout (% of voting-age population)", y = "density")
+```
+
+Turnout is close to **symmetric** (skewness `r round(skewness(y), 2)`) and
+mildly **platykurtic** (kurtosis `r round(kurtosis(y), 2)`, i.e. thinner tails
+than a normal), ranging from about `r round(min(y))`% to `r round(max(y))`% with
+no floor/ceiling pile-up and no extreme outliers. Because the distribution is
+already well-behaved, **no transformation of the outcome is warranted** — OLS on
+`turnout` in its natural units is appropriate.
+
+## Univariate predictor distributions
+
+```{r pred-stats, echo=FALSE}
+ptab <- t(sapply(d[numpred], function(x) c(
+  n = sum(!is.na(x)), n_miss = sum(is.na(x)), mean = mean(x), sd = sd(x),
+  min = min(x), Q1 = quantile(x, .25), median = median(x),
+  Q3 = quantile(x, .75), max = max(x), skew = skewness(x))))
+colnames(ptab) <- c("n", "n_miss", "mean", "sd", "min", "Q1",
+                    "median", "Q3", "max", "skew")
+knitr::kable(round(ptab, 2),
+             caption = "Continuous predictors: summary statistics.")
+```
+
+```{r pred-hist, echo=FALSE, fig.height=3.6, fig.cap="Distributions of the continuous predictors (faceted, free x-axes)."}
+d %>% select(all_of(numpred)) %>%
+  pivot_longer(everything(), names_to = "var", values_to = "val") %>%
+  ggplot(aes(val)) +
+  geom_histogram(bins = 22, fill = "#b2df8a", colour = "white") +
+  facet_wrap(~ var, scales = "free", ncol = 4) +
+  labs(x = NULL, y = "count")
+```
+
+Most predictors are moderately behaved; `squire` (professionalism) and `mmds`
+(multimember-district share) are right-skewed, reflecting a few highly
+professional legislatures and states leaning on multimember districts. The three
+binary indicators split as follows:
+
+```{r bin-freq, echo=FALSE}
+btab <- do.call(rbind, lapply(binvars, function(v) {
+  t <- table(d[[v]])
+  data.frame(variable = v, n_0 = t["0"], n_1 = t["1"],
+             pct_1 = round(100 * mean(d[[v]]), 1))
+}))
+knitr::kable(btab, row.names = FALSE,
+             caption = "Binary predictors: frequencies and share coded 1.")
+```
+
+```{r bin-bar, echo=FALSE, fig.height=2.2, fig.cap="Class balance of the three binary predictors."}
+d %>% select(all_of(binvars)) %>%
+  pivot_longer(everything(), names_to = "var", values_to = "val") %>%
+  count(var, val) %>%
+  ggplot(aes(factor(val), n)) +
+  geom_col(fill = "#fb9a99") +
+  facet_wrap(~ var) +
+  labs(x = "value (0/1)", y = "count")
+```
+
+## Missing-data analysis
+
+```{r miss, echo=FALSE}
+miss <- data.frame(
+  variable = mvars,
+  n_missing = colSums(is.na(d[mvars])),
+  pct_missing = round(100 * colMeans(is.na(d[mvars])), 2))
+knitr::kable(miss, row.names = FALSE,
+             caption = "Missing values per variable in the modeling frame.")
+```
+
+The modeling frame is built by `na.omit()` on the selected columns, so all
+`r nrow(d)` retained state-years are **complete cases** — every variable shows
+0% missing above. Any incompleteness in the raw file was list-wise deleted up
+front; the reproduction therefore fits on a fully observed sample and no
+imputation is needed. (Because deletion happens before analysis, any bias would
+come from *which* state-years were dropped, not from missingness within the
+analysis set.)
+
+## Bivariate relationships with the outcome
+
+For continuous predictors we correlate each with turnout; for the binary
+indicators we compare group means with a two-sample t-test.
+
+```{r marg-num, echo=FALSE}
+mnum <- data.frame(
+  predictor = numpred,
+  r_with_turnout = sapply(d[numpred], function(x) cor(x, d$turnout)))
+mnum <- mnum[order(-abs(mnum$r_with_turnout)), ]
+knitr::kable(mnum, row.names = FALSE, digits = 2,
+             caption = "Continuous predictors: Pearson r with turnout.")
+```
+
+```{r marg-bin, echo=FALSE}
+mbin <- do.call(rbind, lapply(binvars, function(v) {
+  g <- split(d$turnout, d[[v]])
+  tt <- t.test(g[["1"]], g[["0"]])
+  data.frame(predictor = v, mean_1 = mean(g[["1"]]), mean_0 = mean(g[["0"]]),
+             diff = mean(g[["1"]]) - mean(g[["0"]]), p_value = tt$p.value)
+}))
+knitr::kable(mbin, row.names = FALSE, digits = 3,
+             caption = "Binary predictors: turnout means by group (diff = 1 minus 0).")
+```
+
+```{r biv-plot, echo=FALSE, fig.height=3.4, fig.cap="Turnout vs the two strongest continuous predictors (with linear fit), and by presidential-year timing."}
+p1 <- ggplot(d, aes(regdifficulty, turnout)) +
+  geom_point(alpha = 0.35, colour = "#1f78b4") +
+  geom_smooth(method = "lm", se = FALSE, colour = "#e31a1c") +
+  labs(x = "registration closing (days)", y = "turnout")
+p2 <- ggplot(d, aes(squire, turnout)) +
+  geom_point(alpha = 0.35, colour = "#1f78b4") +
+  geom_smooth(method = "lm", se = FALSE, colour = "#e31a1c") +
+  labs(x = "professionalism (Squire)", y = NULL)
+p3 <- ggplot(d, aes(factor(preselec), turnout)) +
+  geom_boxplot(fill = "#a6cee3") +
+  labs(x = "presidential year (0/1)", y = NULL)
+gridExtra::grid.arrange(p1, p2, p3, nrow = 1)
+```
+
+The dominant marginal signal is **election timing**: presidential-year contests
+run far higher (see the `preselec` group difference), and easier registration
+(smaller `regdifficulty`) tracks higher turnout. Professionalism (`squire`) and
+competition (`ranney`) are positively associated, consistent with the paper's
+story. `tlness` (term-limitedness) has only a modest marginal correlation — its
+role emerges once the institutional controls are held constant in the regression.
+
+## Multivariate structure and collinearity
+
+```{r corr-heat, echo=FALSE, fig.height=4.2, fig.cap="Correlation heatmap among continuous predictors."}
+cm <- cor(d[numpred])
+cmdf <- as.data.frame(as.table(cm))
+names(cmdf) <- c("v1", "v2", "r")
+ggplot(cmdf, aes(v1, v2, fill = r)) +
+  geom_tile(colour = "white") +
+  geom_text(aes(label = round(r, 2)), size = 2.4) +
+  scale_fill_gradient2(low = "#e31a1c", mid = "white", high = "#1f78b4",
+                       midpoint = 0, limits = c(-1, 1)) +
+  labs(x = NULL, y = NULL) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r vif, echo=FALSE}
+ols0 <- lm(turnout ~ ., data = d)
+X <- model.matrix(ols0)[, -1]
+vif <- sapply(colnames(X), function(v) {
+  r2 <- summary(lm(X[, v] ~ X[, setdiff(colnames(X), v)]))$r.squared
+  1 / (1 - r2)
+})
+vtab <- data.frame(predictor = names(vif), VIF = as.numeric(vif))
+vtab <- vtab[order(-vtab$VIF), ]
+knitr::kable(vtab, row.names = FALSE, digits = 2,
+             caption = "Variance inflation factors from the reproduction model.")
+```
+
+One correlation exceeds the **|r| > 0.7** flag: `income2` and `year`
+(r `r round(cor(d$income2, d$year), 2)`) — per-capita income rises secularly over
+the sample window — and these two carry the largest VIFs (~`r round(max(vif), 1)`
+and ~`r round(sort(vif, decreasing = TRUE)[2], 1)`). All other VIFs sit below
+2.5. The collinearity is mild and confined to the income/time pair, so OLS
+coefficients on the substantive institutional predictors remain interpretable;
+it is worth noting only because it can inflate the standard errors on `income2`
+and `year` specifically. This motivates the regularized comparisons introduced
+in later tutorials, where correlated predictors are handled by shrinkage.
 
 # Reproduce the published regression
 

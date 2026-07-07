@@ -9,15 +9,22 @@ geometry: margin=1in
 fontsize: 10pt
 header-includes:
   - \usepackage{fvextra}
-  - \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,breakanywhere,commandchars=\\\{\}}
-  - \DefineVerbatimEnvironment{verbatim}{Verbatim}{breaklines,breakanywhere}
+  - \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+  - \DefineVerbatimEnvironment{verbatim}{Verbatim}{breaklines}
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
                       fig.width = 6.5, fig.height = 3.6, fig.align = "center")
-options(width = 82)
-library(glmnet)   # lasso / ridge / elastic net
+options(width = 80)
+library(glmnet)     # lasso / ridge / elastic net
+library(ggplot2)    # EDA plots
+library(dplyr)      # data wrangling
+library(tidyr)      # reshaping for faceted plots
+library(knitr)      # kable tables
+library(patchwork)  # compose ggplots
+library(e1071)      # skewness / kurtosis
+theme_set(theme_minimal(base_size = 9))
 ```
 
 > **Published study.** De Cock, D. (2011). "Ames, Iowa: Alternative to the Boston Housing Data as an End of
@@ -48,31 +55,229 @@ uses ten interpretable features; the regularization section uses De Cock's full 
 | `Lot.Area` | lot size (sq ft) |
 | `Fireplaces` | number of fireplaces |
 
-# Descriptive results
+# Descriptive analysis
+
+We load the data exactly as the reproduction does, then profile it thoroughly before
+fitting anything. The read, the median-imputation of the ten curated features, and the
+complete-case filter below are the *published* pipeline and are left untouched; the EDA
+that follows is computed on the resulting data frame `d`.
 
 ```{r data}
-d <- read.delim("https://raw.githubusercontent.com/bdesmarais/intro-ml-statistical-horizons-4day/main/tutorials/day3_regularization_and_selection/08_ames_housing/data/AmesHousing.txt",
+d <- read.delim(paste0(
+  "https://raw.githubusercontent.com/bdesmarais/",
+  "intro-ml-statistical-horizons-4day/main/",
+  "tutorials/day3_regularization_and_selection/08_ames_housing/data/AmesHousing.txt"),
                 stringsAsFactors = FALSE, check.names = TRUE)
 feats <- c("Overall.Qual", "Gr.Liv.Area", "Total.Bsmt.SF", "Garage.Cars", "Year.Built",
            "Year.Remod.Add", "Full.Bath", "TotRms.AbvGrd", "Lot.Area", "Fireplaces")
 for (j in feats) d[[j]][is.na(d[[j]])] <- median(d[[j]], na.rm = TRUE)   # a few missing values
 d <- d[complete.cases(d[, c("SalePrice", feats)]), ]
-
-round(t(sapply(d[c("SalePrice", feats)],
-               function(x) c(mean = mean(x), sd = sd(x), min = min(x), max = max(x)))), 1)
 ```
 
-```{r desc-plot, fig.height=3, fig.cap="Sale-price distribution (left) and each feature's correlation with price (right)."}
-clean <- function(v) gsub("[._]+", " ", v)
-par(mfrow = c(1, 2))
-par(mar = c(4, 4, 2.5, 1))
-hist(d$SalePrice, breaks = 30, col = "#a6cee3", border = "white", main = "Outcome: SalePrice",
-     xlab = "sale price (USD)")
-cors <- sort(sapply(d[feats], function(x) cor(x, d$SalePrice)))
-par(mar = c(4, 7, 2.5, 1))
-barplot(cors, horiz = TRUE, las = 1, names.arg = clean(names(cors)), cex.names = 0.8,
-        col = "#1f78b4", main = "Correlation with price", xlab = "correlation")
+## Dataset and provenance
+
+The **unit of analysis** is a single residential **home sale** in Ames, Iowa recorded by the
+City Assessor's Office over **2006-2010**; it is a near-census of transactions in that window,
+not a random sample. After the published complete-case filter on the ten curated features we
+retain **`r nrow(d)` sales** described by **`r ncol(d)` raw columns** (`r sum(sapply(d, is.numeric))`
+numeric, `r sum(sapply(d, is.character))` character). Two columns (`Order`, `PID`) are record
+identifiers and are dropped before modeling.
+
+De Cock's intended use is a **hedonic price regression**: decompose `SalePrice` into the marginal
+contributions of a home's physical characteristics. The reproduction below uses ten interpretable
+features; the regularization section expands to the full ~80-feature set (one-hot encoded to ~250
+columns), which is why this is a *wide*-model illustration.
+
+The **variable dictionary** for the outcome and the ten curated predictors:
+
+```{r dict}
+dict <- data.frame(
+  Variable = c("SalePrice", feats),
+  Role = c("outcome", rep("predictor", length(feats))),
+  Type = c("numeric ($)", "ordinal 1-10", "numeric (sq ft)", "numeric (sq ft)",
+           "count", "year", "year", "count", "count", "numeric (sq ft)", "count"),
+  Description = c(
+    "sale price in USD",
+    "overall material-and-finish quality (1 = poor, 10 = excellent)",
+    "above-grade living area (sq ft)",
+    "total basement area (sq ft)",
+    "garage capacity (number of cars)",
+    "year of original construction",
+    "year of last remodel/addition",
+    "full bathrooms above grade",
+    "total rooms above grade (excludes bathrooms)",
+    "lot size (sq ft)",
+    "number of fireplaces"))
+kable(dict, caption = "Variable dictionary: outcome and curated hedonic predictors.")
 ```
+
+## The outcome: SalePrice
+
+```{r y-stats}
+y_summary <- function(x) {
+  q <- quantile(x, c(.25, .5, .75))
+  data.frame(n = length(x), mean = mean(x), sd = sd(x), min = min(x),
+             Q1 = q[1], median = q[2], Q3 = q[3], max = max(x),
+             IQR = q[3] - q[1], skew = e1071::skewness(x),
+             kurt = e1071::kurtosis(x))
+}
+kable(round(y_summary(d$SalePrice)), row.names = FALSE,
+      caption = "SalePrice distribution summary (USD).")
+```
+
+```{r y-dist, fig.height=2.7, fig.cap="SalePrice on the raw dollar scale (left, right-skewed) and after a log10 transform (right, near-symmetric)."}
+p1 <- ggplot(d, aes(SalePrice)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 40,
+                 fill = "#a6cee3", colour = "white") +
+  geom_density(colour = "#1f78b4", linewidth = .6) +
+  scale_x_continuous(labels = function(z) z / 1000) +
+  labs(x = "sale price ($000)", y = "density", title = "Raw scale")
+p2 <- ggplot(d, aes(log10(SalePrice))) +
+  geom_histogram(aes(y = after_stat(density)), bins = 40,
+                 fill = "#b2df8a", colour = "white") +
+  geom_density(colour = "#33a02c", linewidth = .6) +
+  labs(x = "log10(sale price)", y = "density", title = "Log scale")
+p1 + p2
+```
+
+`SalePrice` ranges from about \$13k to \$755k with a mean near \$180k above the median (~\$160k),
+the classic signature of a **right-skewed** price variable (skewness `r round(e1071::skewness(d$SalePrice), 2)`,
+excess kurtosis `r round(e1071::kurtosis(d$SalePrice), 2)` — a heavy upper tail of expensive homes).
+A **log transform** removes almost all of the skew (right panel), which is why hedonic practice
+routinely models `log(price)`. The reproduction below follows De Cock and keeps the **raw dollar
+scale** so coefficients read as dollars-per-unit; the skew is worth flagging because it inflates
+RMSE through the high-price tail and rewards models that fit the bulk well.
+
+## Univariate predictor distributions
+
+```{r x-stats}
+skew_tab <- function(x) {
+  q <- quantile(x, c(.25, .5, .75))
+  c(n = length(x), n_miss = sum(is.na(x)), mean = mean(x), sd = sd(x),
+    min = min(x), Q1 = q[1], median = q[2], Q3 = q[3], max = max(x),
+    skew = e1071::skewness(x))
+}
+xtab <- t(sapply(d[feats], skew_tab))
+kable(round(xtab, 1), caption = "Summary statistics for the ten curated predictors.")
+```
+
+```{r x-dist, fig.height=3.6, fig.cap="Distributions of the ten curated numeric predictors (post-imputation)."}
+d %>%
+  select(all_of(feats)) %>%
+  pivot_longer(everything(), names_to = "var", values_to = "val") %>%
+  ggplot(aes(val)) +
+  geom_histogram(bins = 25, fill = "#1f78b4", colour = "white") +
+  facet_wrap(~ var, scales = "free", ncol = 5) +
+  labs(x = NULL, y = "count") +
+  theme(axis.text = element_text(size = 6))
+```
+
+Several predictors carry the same right skew as the outcome — `Lot.Area`, `Gr.Liv.Area`, and
+`Total.Bsmt.SF` all have long upper tails (a few very large properties), while `Overall.Qual`
+is roughly bell-shaped around 5-6 and the counts (`Full.Bath`, `Garage.Cars`, `Fireplaces`,
+`TotRms.AbvGrd`) are discrete and multi-modal. `Year.Built`/`Year.Remod.Add` show the vintage
+mix of the housing stock. These skews reinforce that linear coefficients describe average
+marginal effects across a heterogeneous stock.
+
+## Missing data
+
+The curated ten are essentially complete, but the **full** dataset is not — and its missingness
+is the well-known Ames pattern:
+
+```{r missing}
+draw <- read.delim(paste0(
+  "https://raw.githubusercontent.com/bdesmarais/",
+  "intro-ml-statistical-horizons-4day/main/",
+  "tutorials/day3_regularization_and_selection/08_ames_housing/data/AmesHousing.txt"),
+                   stringsAsFactors = FALSE, check.names = TRUE)
+na_ct <- sapply(draw, function(x) sum(is.na(x)))
+na_ct <- sort(na_ct[na_ct > 0], decreasing = TRUE)
+miss <- data.frame(variable = names(na_ct), n_missing = as.integer(na_ct),
+                   pct_missing = round(100 * na_ct / nrow(draw), 1))
+kable(head(miss, 12), row.names = FALSE,
+      caption = "Twelve most-missing columns in the full dataset (of 25 with any NA).")
+```
+
+The heavily "missing" columns are **structurally absent features, not lost data**: `Pool.QC` is
+NA for the `r sum(is.na(draw$Pool.QC))` homes with no pool, `Alley` for homes with no alley
+access, `Fireplace.Qu` where there is no fireplace, and the `Garage.*` block where there is no
+garage. The mechanism is therefore **missing-not-at-random by construction** — the NA *is* the
+information ("none"). Only `Lot.Frontage` (`r round(100*mean(is.na(draw$Lot.Frontage)),1)`%) is
+plausibly missing-at-random. The reproduction's pipeline handles this by **median-imputing** the
+few NAs in the numeric curated features, and the regularization section recodes character NAs to
+an explicit `"NA"` level (so "no garage" becomes its own category) before one-hot encoding.
+
+## Bivariate relationships with SalePrice
+
+```{r biv-tab}
+assoc <- sapply(d[feats], function(x) cor(x, d$SalePrice))
+bt <- data.frame(predictor = feats,
+                 r_with_price = round(as.numeric(assoc), 3),
+                 abs_r = round(abs(as.numeric(assoc)), 3))
+bt <- bt[order(-bt$abs_r), ]
+kable(bt, row.names = FALSE,
+      caption = "Pearson correlation of each predictor with SalePrice, sorted.")
+```
+
+```{r biv-plot, fig.height=3.6, fig.cap="SalePrice against the four predictors most correlated with it, with linear smoothers and r."}
+top4 <- bt$predictor[1:4]
+d %>%
+  select(SalePrice, all_of(top4)) %>%
+  pivot_longer(-SalePrice, names_to = "var", values_to = "val") %>%
+  ggplot(aes(val, SalePrice / 1000)) +
+  geom_point(alpha = .15, colour = "#1f78b4", size = .5) +
+  geom_smooth(method = "lm", se = FALSE, colour = "#e31a1c", linewidth = .7) +
+  facet_wrap(~ var, scales = "free_x", ncol = 2) +
+  labs(x = NULL, y = "sale price ($000)")
+```
+
+**Overall quality** and **above-grade living area** are the dominant correlates of price
+(r > 0.7 each), followed by garage capacity, basement size, and construction year — exactly the
+features a buyer would price. The relationships are close to linear on the dollar scale over the
+bulk of the range, curving up only in the expensive tail, which supports the OLS specification
+while foreshadowing why the high-price homes drive the residual variance.
+
+## Multivariate structure and collinearity
+
+```{r corr-heat, fig.height=3.8, fig.cap="Correlation heatmap among SalePrice and the ten curated predictors."}
+cm <- cor(d[c("SalePrice", feats)])
+cm[lower.tri(cm)] <- NA
+as.data.frame(cm) %>%
+  mutate(row = rownames(cm)) %>%
+  pivot_longer(-row, names_to = "col", values_to = "r") %>%
+  filter(!is.na(r)) %>%
+  mutate(row = factor(row, levels = rownames(cm)),
+         col = factor(col, levels = rownames(cm))) %>%
+  ggplot(aes(col, row, fill = r)) +
+  geom_tile(colour = "white") +
+  geom_text(aes(label = sprintf("%.2f", r)), size = 2.1) +
+  scale_fill_gradient2(low = "#2166ac", mid = "white", high = "#b2182b",
+                       midpoint = 0, limits = c(-1, 1)) +
+  labs(x = NULL, y = NULL) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 6),
+        axis.text.y = element_text(size = 6))
+```
+
+```{r vif}
+# VIF for each curated predictor = 1 / (1 - R^2) from regressing it on the others.
+vif_calc <- function(vars, data) {
+  sapply(vars, function(v) {
+    r2 <- summary(lm(reformulate(setdiff(vars, v), v), data = data))$r.squared
+    1 / (1 - r2)
+  })
+}
+vifs <- vif_calc(feats, d)
+kable(data.frame(predictor = names(vifs), VIF = round(as.numeric(vifs), 2)),
+      row.names = FALSE, caption = "Variance inflation factors (curated hedonic model).")
+```
+
+No pair of curated predictors is alarmingly collinear (all |r| well below 0.7 except the
+size-related features, and every **VIF is under ~3**), so the ten-feature OLS is stable and its
+coefficients interpretable. Collinearity becomes a real problem only in the **full ~250-column
+design** — many size, quality, and neighborhood indicators are mutually correlated — which is
+precisely the regime where unpenalized OLS over-fits and **regularization** earns its keep. The
+descriptives thus motivate the whole tutorial: a clean, interpretable ten-feature hedonic model
+reproduces the published fit, while the wide design demands a penalty.
 
 # Reproduce the published regression
 

@@ -9,8 +9,8 @@ geometry: margin=1in
 fontsize: 10pt
 header-includes:
   - \usepackage{fvextra}
-  - \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,breakanywhere,commandchars=\\\{\}}
-  - \DefineVerbatimEnvironment{verbatim}{Verbatim}{breaklines,breakanywhere}
+  - \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+  - \DefineVerbatimEnvironment{verbatim}{Verbatim}{breaklines}
 ---
 
 ```{r setup, include=FALSE}
@@ -49,32 +49,245 @@ Fearon and Laitin ask **what conditions make civil war likely** worldwide from 1
 | `ef` | ethnolinguistic fractionalization |
 | `relfrac` | religious fractionalization |
 
-# Descriptive results
+# Descriptive analysis
+
+Before modeling we profile the data end to end: provenance and variable roles, the
+outcome's rarity, the shape and missingness of every predictor, each predictor's
+marginal association with onset, and the collinearity structure of the design matrix.
+The through-line is that this is a **rare-event binary** problem, and the descriptives
+tell us which evaluation metrics and modeling choices that fact forces on us.
 
 ```{r data}
-d <- read.csv("https://raw.githubusercontent.com/bdesmarais/intro-ml-statistical-horizons-4day/main/tutorials/day1_intro_and_evaluation/02_fearon_laitin/data/SambnisImp.csv")
+d <- read.csv(paste0(
+  "https://raw.githubusercontent.com/bdesmarais/",
+  "intro-ml-statistical-horizons-4day/main/",
+  "tutorials/day1_intro_and_evaluation/02_fearon_laitin/data/SambnisImp.csv"))
 fl <- c("warhist", "ln_gdpen", "lpopns", "lmtnest", "ncontig", "oil", "nwstate",
         "inst3", "pol4", "ef", "relfrac")
 d <- d[complete.cases(d[, c("warstds", fl)]), c("warstds", fl)]
-
-round(t(sapply(d, function(x) c(mean = mean(x), sd = sd(x), min = min(x), max = max(x)))), 2)
 ```
 
-```{r desc-plot, fig.height=3, fig.cap="Class balance of the rare onset outcome (left) and the covariates that differ most between onset and non-onset years (right)."}
-par(mfrow = c(1, 2))
-par(mar = c(4, 4, 2.5, 1))
-barplot(table(d$warstds), names.arg = c("no onset", "onset"),
-        col = c("grey75", "#1f78b4"), main = "Outcome: warstds", ylab = "count")
+## Dataset and provenance
 
-# standardized mean difference (onset - non-onset) for each predictor
-smd <- sapply(d[fl], function(x) (mean(x[d$warstds == 1]) - mean(x[d$warstds == 0])) / sd(x))
-smd <- tail(smd[order(abs(smd))], 8)
+The data are the Sambanis (2006) replication of Fearon & Laitin (2003), distributed as
+a **multiply-imputed** country-year panel on the Harvard Dataverse
+(doi:10.7910/DVN/KRKWK8). The **unit of analysis is a country-year** spanning 1945–1999;
+after restricting to the outcome and the eleven Table-1 covariates we retain
+`r nrow(d)` complete country-years. The outcome `warstds` is the **onset** of a new
+civil war (coded 1 only in the war's first year), so the sample is dominated by
+peace-years and onsets are rare by construction.
+
+```{r dims}
+cat(sprintf("rows (country-years): %d\n", nrow(d)))
+cat(sprintf("columns: 1 outcome + %d predictors\n", length(fl)))
+cat(sprintf("civil-war onsets: %d  (base rate %.2f%%)\n",
+            sum(d$warstds), 100 * mean(d$warstds)))
+```
+
+A subtlety worth flagging up front: three nominally binary indicators
+(`ncontig`, `nwstate`, `inst3`) were **imputed**, so although they range on \([0,1]\)
+they take fractional values for the ~9–11% of rows that were filled in — we treat them
+as continuous \([0,1]\) scores below, not clean dummies.
+
+```{r roles-tbl}
+roles <- data.frame(
+  variable = c("warstds","warhist","ln_gdpen","lpopns","lmtnest","ncontig",
+               "oil","nwstate","inst3","pol4","ef","relfrac"),
+  role = c("outcome", rep("predictor", 11)),
+  type = c("binary","binary","continuous","continuous","continuous",
+           "imputed [0,1]","binary","imputed [0,1]","imputed [0,1]",
+           "continuous","continuous","continuous"),
+  description = c(
+    "civil-war onset (1 = first war-year)","prior civil-war history",
+    "log GDP per capita (lagged)","log population","log % mountainous terrain",
+    "noncontiguous territory","oil exporter (fuel > 1/3 exports)",
+    "new state (first two years)","political instability (>=3 Polity change)",
+    "Polity score (-10..+10)","ethnolinguistic fractionalization",
+    "religious fractionalization"))
+knitr::kable(roles, caption = "Variable dictionary: outcome and predictors.")
+```
+
+## The outcome in depth
+
+`warstds` is binary, so its "distribution" is a **base rate**: onsets occur in only
+`r sprintf("%.2f%%", 100 * mean(d$warstds))` of country-years. The stats table below
+reports it as a 0/1 variable; for a Bernoulli variable the mean *is* the base rate and
+the (positive) skew and heavy kurtosis simply restate how lopsided the classes are.
+
+```{r outcome-stats}
+sstat <- function(x) {
+  q <- quantile(x, c(.25, .5, .75))
+  c(n = length(x), mean = mean(x), sd = sd(x), min = min(x),
+    Q1 = q[[1]], median = q[[2]], Q3 = q[[3]], max = max(x),
+    IQR = q[[3]] - q[[1]], skew = e1071::skewness(x),
+    kurt = e1071::kurtosis(x))
+}
+round(t(sapply(d["warstds"], sstat)), 3)
+```
+
+```{r outcome-plot, fig.height=2.9, fig.cap="Class balance of the rare onset outcome. Peace-years outnumber onsets roughly 60-to-1, so a model that always predicts 'no war' is 98.4% accurate yet useless."}
+par(mar = c(4, 4.5, 2.5, 1))
+bp <- barplot(table(d$warstds), names.arg = c("no onset", "onset"),
+              col = c("grey75", "#1f78b4"), border = "white",
+              main = "Outcome: warstds (base rate 1.6%)", ylab = "country-years")
+text(bp, table(d$warstds), labels = table(d$warstds), pos = 3, xpd = NA, cex = .9)
+```
+
+**Implication for evaluation.** With a 1.6% base rate, **accuracy is meaningless** — the
+"always predict peace" baseline already scores 98.4%. Class imbalance is exactly why the
+prediction section below reports the **ROC** and, more honestly, the **precision-recall**
+curve, whose no-skill baseline is the base rate itself. No transform applies to a binary
+outcome; the modeling response to rarity is metric choice (and, in extensions, resampling
+or penalties), not a re-expression of \(y\).
+
+## Univariate predictor distributions
+
+We summarize all eleven predictors in one table (rounding so nothing overflows the
+margin), then show the numeric ones as faceted histograms.
+
+```{r pred-stats}
+psum <- function(x) {
+  q <- quantile(x, c(.25, .5, .75))
+  c(n = length(x), n_miss = sum(is.na(x)), mean = mean(x), sd = sd(x),
+    min = min(x), Q1 = q[[1]], median = q[[2]], Q3 = q[[3]],
+    max = max(x), skew = e1071::skewness(x))
+}
+round(t(sapply(d[fl], psum)), 3)
+```
+
+```{r pred-hist, fig.height=4.6, fig.cap="Univariate distributions of the eleven predictors. Logged economic/terrain variables are roughly symmetric; the imputed indicators (ncontig, nwstate, inst3) and oil/warhist pile up at 0."}
+library(ggplot2); library(tidyr)
+long <- pivot_longer(d[fl], everything(), names_to = "var",
+                     values_to = "value")
+ggplot(long, aes(value)) +
+  geom_histogram(bins = 30, fill = "#1f78b4", colour = "white",
+                 linewidth = .15) +
+  facet_wrap(~ var, scales = "free", ncol = 4) +
+  labs(x = NULL, y = "count") +
+  theme_bw(base_size = 8)
+```
+
+The truly binary predictors `warhist` (prior war) and `oil` (oil exporter) are best read
+as frequency tables:
+
+```{r binary-freq}
+bin_tab <- function(v) {
+  tb <- table(factor(d[[v]], levels = c(0, 1)))
+  data.frame(variable = v, n_0 = tb[[1]], n_1 = tb[[2]],
+             pct_1 = round(100 * tb[[2]] / sum(tb), 1))
+}
+knitr::kable(do.call(rbind, lapply(c("warhist", "oil"), bin_tab)),
+             row.names = FALSE,
+             caption = "Frequency of the two clean binary predictors.")
+```
+
+**Read-out.** The logged variables (`ln_gdpen`, `lpopns`, `lmtnest`) are close to
+symmetric — logging has already tamed the raw right-skew of income, population and
+terrain, which is why the published model uses them on the log scale. `pol4` (Polity) is
+bimodal, clustering at the autocratic and democratic poles. `ef`/`relfrac` are bounded
+fractionalization indices on \([0,1]\). About a fifth of country-years carry a prior-war
+history and roughly a quarter are oil exporters.
+
+## Missing-data analysis
+
+Because the file is a completed multiple imputation, there are essentially **no missing
+cells** in the modeling columns — the imputation is precisely how Sambanis handled the
+extensive missingness in the raw Fearon–Laitin covariates.
+
+```{r missing}
+miss <- data.frame(
+  variable = c("warstds", fl),
+  n_missing = sapply(d[c("warstds", fl)], function(x) sum(is.na(x))),
+  pct_missing = round(100 * sapply(d[c("warstds", fl)],
+                      function(x) mean(is.na(x))), 2))
+cat(sprintf("complete cases: %d of %d (%.1f%%)\n",
+            sum(complete.cases(d)), nrow(d),
+            100 * mean(complete.cases(d))))
+knitr::kable(miss, row.names = FALSE,
+             caption = "Missingness by variable (post-imputation).")
+```
+
+The reproduction takes complete cases (a no-op here), so the imputation's uncertainty is
+not propagated — a known simplification worth naming: the standard errors below treat the
+imputed values as observed.
+
+## Bivariate relationships with the outcome
+
+For a binary outcome the natural bivariate summary is **how each predictor differs
+between onset and non-onset years**. We report the group means, a standardized mean
+difference (Cohen's \(d\)), and a two-sample \(t\)-test \(p\)-value.
+
+```{r bivar-tbl}
+biv <- t(sapply(fl, function(v) {
+  x1 <- d[[v]][d$warstds == 1]; x0 <- d[[v]][d$warstds == 0]
+  sp <- sqrt(((length(x1) - 1) * var(x1) +
+              (length(x0) - 1) * var(x0)) /
+             (length(x1) + length(x0) - 2))
+  c(mean_onset = mean(x1), mean_peace = mean(x0),
+    cohen_d = (mean(x1) - mean(x0)) / sp,
+    p_value = t.test(x1, x0)$p.value)
+}))
+knitr::kable(round(biv, 3),
+             caption = "Marginal association of each predictor with onset.")
+```
+
+```{r bivar-plot, fig.height=3, fig.cap="Standardized mean difference (onset minus non-onset, in SD units) for each predictor. Onset years are poorer, more populous, more mountainous, and carry more prior-war history and instability."}
+smd <- biv[, "cohen_d"]; smd <- smd[order(smd)]
 par(mar = c(4, 6, 2.5, 1))
-barplot(smd, horiz = TRUE, las = 1, cex.names = 0.85,
-        col = ifelse(smd > 0, "#1f78b4", "#e31a1c"), main = "Onset vs non-onset",
-        xlab = "std. mean difference")
+barplot(smd, horiz = TRUE, las = 1, cex.names = 0.8,
+        col = ifelse(smd > 0, "#1f78b4", "#e31a1c"),
+        main = "Onset vs non-onset", xlab = "std. mean difference (Cohen's d)")
 abline(v = 0, col = "grey50")
 ```
+
+The largest separations are exactly the **insurgency-favoring** conditions: onset years
+have **lower GDP per capita**, **larger populations**, **more mountainous terrain**, more
+**prior-war history** and more **instability**. Ethnolinguistic and religious
+fractionalization (`ef`, `relfrac`) barely move — the descriptive foreshadowing of
+Fearon & Laitin's headline null on ethnic grievance.
+
+## Multivariate structure and collinearity
+
+Finally we check whether the predictors are entangled with one another, since
+collinearity inflates standard errors and destabilizes the logit.
+
+```{r corr-heat, fig.height=4.3, fig.cap="Pearson correlations among the eleven predictors. No |r| exceeds 0.7, so the design matrix is well conditioned."}
+cm <- cor(d[fl])
+cml <- as.data.frame(as.table(cm))
+names(cml) <- c("v1", "v2", "r")
+cml$v1 <- factor(cml$v1, levels = fl)
+cml$v2 <- factor(cml$v2, levels = rev(fl))
+ggplot(cml, aes(v1, v2, fill = r)) +
+  geom_tile(colour = "white") +
+  geom_text(aes(label = sprintf("%.2f", r)), size = 2.2) +
+  scale_fill_gradient2(low = "#e31a1c", mid = "white",
+                       high = "#1f78b4", midpoint = 0, limits = c(-1, 1)) +
+  labs(x = NULL, y = NULL) +
+  theme_minimal(base_size = 8) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r vif}
+# variance inflation factors from the reproduction design (no car dependency)
+X <- d[fl]
+vif <- sapply(fl, function(v) {
+  r2 <- summary(lm(reformulate(setdiff(fl, v), v), data = X))$r.squared
+  1 / (1 - r2)
+})
+mx <- max(abs(cor(d[fl])[upper.tri(cor(d[fl]))]))
+cat(sprintf("largest absolute pairwise correlation: %.2f\n", mx))
+round(sort(vif, decreasing = TRUE), 2)
+```
+
+Every pairwise \(|r|\) is below the 0.7 flag and all **VIFs sit near 1** (well under the
+customary 5), so multicollinearity is not a concern: the eleven covariates carry largely
+independent information and the logit coefficients below are individually identifiable.
+
+**Descriptive verdict.** The picture is a **highly imbalanced binary outcome** whose
+onset years separate cleanly on insurgency conditions but not on ethnic grievance, over
+a clean, low-collinearity, fully-imputed design. That combination is what motivates the
+choices ahead: fit the published logit for the explanatory claim, then evaluate its
+*predictions* out of sample with **precision-recall**, not accuracy.
 
 # Reproduce the published regression
 

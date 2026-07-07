@@ -1,0 +1,686 @@
+---
+title: "Predicting Secondary-School Final Grades: Reproduction and Day-1 Model-Evaluation Extension"
+subtitle: "Reproducing El Aissaoui et al. (2020), *A Multiple Linear Regression-Based Approach to Predict Student Performance*"
+author: "Intro to Machine Learning --- Day 1: Introduction & Model Evaluation"
+date: "`r format(Sys.Date())`"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+    fig_caption: true
+header-includes:
+  - \setlength{\emergencystretch}{3em}
+  - \usepackage{fvextra}
+  - \AtBeginDocument{\DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}}
+  - \AtBeginDocument{\DefineVerbatimEnvironment{verbatim}{Verbatim}{breaklines}}
+  - \fvset{breaklines=true}
+  - \usepackage{booktabs}
+  - \usepackage{float}
+---
+
+```{r setup, include=FALSE}
+options(width = 80)
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.align = "center", fig.width = 6, fig.height = 4,
+                      fig.pos = "H")
+set.seed(20240501)
+options(digits = 5)
+```
+
+# The study and the reproduction gate
+
+**Citation.** El Aissaoui, O., El Alami El Madani, Y., Oughdir, L., Dakkak, A., & El Allioui, Y. (2020).
+*A Multiple Linear Regression-Based Approach to Predict Student Performance.* In M. Ezziyyani (Ed.),
+Advanced Intelligent Systems for Sustainable Development (AI2SD 2019), AISC 1102, pp. 9--23. Springer.
+DOI: \texttt{10.1007/978-3-030-36653-7\_2}.
+
+**Data source.** Cortez, P. & Silva, A. (2008), *Student Performance* dataset, UCI Machine Learning
+Repository, DOI \texttt{10.24432/C50G6X} --- file \texttt{student-mat.csv} (Mathematics course, 395 students,
+33 columns). The dataset is fully public and ships with the course as a local copy.
+
+**The published model.** The paper's task is a plain OLS (`lm`) predicting the final Mathematics grade
+`G3` (numeric, 0--20). Of the seven candidate models the authors report (Table 2), their best
+(**Model 6 / MARS-selected**, lowest RMSE and highest $R^2$ in their Table 3) uses five predictors:
+
+$$
+\widehat{G3} = 17.7935 + 0.8627\,\text{Medu} - 0.5603\,\text{goout}
+- 1.2458\,\text{romanticyes} - 0.4423\,\text{age} - 1.6562\,\text{schoolsupyes}.
+$$
+
+Here `Medu` = mother's education (0--4), `goout` = going out with friends (1--5),
+`romantic` = in a romantic relationship (yes/no), `age` (15--22), `schoolsup` = extra
+educational support (yes/no).
+
+The **reproduction gate**: our reproduced coefficients must match the six printed numbers above.
+A subtlety --- the paper preprocesses numeric predictors by replacing boxplot outliers with `NA`
+and then mean-imputing them (their Section 3.2). We replicate that exactly.
+
+```{r load-data}
+raw <- read.csv(paste0(
+  "https://raw.githubusercontent.com/bdesmarais/",
+  "intro-ml-statistical-horizons-4day/main/",
+  "tutorials/day1_intro_and_evaluation/elaissaoui_student_grades/data/student-mat.csv"), sep = ";", stringsAsFactors = FALSE)
+cat("Rows x cols:", nrow(raw), "x", ncol(raw), "\n")
+cat("Outcome G3: range", paste(range(raw$G3), collapse = "-"),
+    "| mean", round(mean(raw$G3), 3), "| sd", round(sd(raw$G3), 3), "\n")
+
+# Paper's preprocessing: boxplot-outlier -> NA -> mean imputation on numeric predictors.
+impute_outliers <- function(x) {
+  out <- boxplot.stats(x)$out          # points beyond 1.5*IQR
+  x[x %in% out] <- NA
+  x[is.na(x)]  <- mean(x, na.rm = TRUE) # mean imputation
+  x
+}
+dat <- raw
+dat$romantic  <- factor(dat$romantic,  levels = c("no", "yes"))
+dat$schoolsup <- factor(dat$schoolsup, levels = c("no", "yes"))
+for (v in c("Medu", "goout", "age")) dat[[v]] <- impute_outliers(dat[[v]])
+```
+
+# Descriptive analysis
+
+Before fitting anything, we meet the data properly. A careful exploratory pass is not decoration ---
+it tells us the shape of the outcome (and whether it needs transforming), which predictors carry
+signal, whether any variables are collinear enough to destabilize an OLS, and where the missing data
+are. Everything the modeling section does downstream is easier to interpret once we have looked.
+
+## Dataset and provenance
+
+The **unit of analysis is the individual student**. There are `r nrow(dat)` students enrolled in the
+Mathematics course, each described by `r ncol(raw)` variables. The data come from a **single-wave,
+cross-sectional survey** administered in two public secondary schools in the Alentejo region of
+Portugal during the **2005--2006 academic year** (Cortez & Silva 2008). Records were built by
+combining school reports (grades, absences) with a paper questionnaire on demographics, family
+background, and social/study habits; the two sources were merged per student. There is **no sampling
+weight and no time dimension** --- it is a convenience census of the two schools' math cohorts, so
+inferences are to *these students*, not to Portugal as a whole.
+
+The 33 columns fall into four blocks: (i) **demographics** (`sex`, `age`, `address`, ...),
+(ii) **family background** (`Medu`, `Fedu`, `Mjob`, `Fjob`, `Pstatus`, ...), (iii) **study / social
+behavior** (`studytime`, `failures`, `goout`, `absences`, alcohol use, ...), and (iv) **three grade
+periods** `G1`, `G2`, `G3` (first-period, second-period, and final math grade, each 0--20). The paper
+predicts `G3` from a small demographic/behavioral subset and deliberately *excludes* the earlier
+grades `G1`/`G2` (which would otherwise dominate); we honor that choice throughout.
+
+```{r eda-dictionary}
+# Variable dictionary for the outcome + the model's predictors (+ the Day-1 knob).
+dict <- data.frame(
+  variable = c("G3", "Medu", "goout", "romantic", "age",
+               "schoolsup", "absences"),
+  role = c("outcome", "predictor", "predictor", "predictor",
+           "predictor", "predictor", "Day-1 flex knob"),
+  type = c("numeric (0-20)", "ordinal 0-4", "ordinal 1-5",
+           "binary", "numeric (years)", "binary", "count"),
+  description = c(
+    "Final math grade",
+    "Mother's education level",
+    "Frequency of going out with friends",
+    "In a romantic relationship",
+    "Student age",
+    "Extra school educational support",
+    "Number of school absences"),
+  coding = c("0=fail .. 20=top", "0=none,1=primary,2=5-9th,3=sec,4=higher",
+             "1=very low .. 5=very high", "no / yes", "15-22 years",
+             "no / yes", "0-93 days"))
+knitr::kable(dict, row.names = FALSE,
+             caption = "Variable dictionary: outcome, the five published predictors, and the Day-1 flexibility knob (absences).")
+```
+
+We profile these variables in depth below and return to the fuller feature set only where it clarifies
+the modeling. We also load the plotting/EDA helpers used in this section.
+
+```{r eda-libs}
+library(ggplot2)
+library(dplyr)
+suppressMessages(library(GGally))
+suppressMessages(library(patchwork))
+theme_set(theme_minimal(base_size = 10))
+```
+
+## The outcome `G3`, in depth
+
+```{r eda-outcome, fig.height=3.0, fig.cap="Final math grade G3 (0--20): histogram with overlaid density (left) and boxplot (right). The tall bar at 0 is the ~10% of students recorded with a zero final grade."}
+g_hist <- ggplot(dat, aes(G3)) +
+  geom_histogram(aes(y = after_stat(density)), breaks = 0:20,
+                 fill = "grey80", colour = "white") +
+  geom_density(colour = "firebrick", linewidth = 0.8) +
+  geom_vline(xintercept = mean(dat$G3), colour = "firebrick",
+             linetype = 2) +
+  labs(x = "G3 (final math grade)", y = "density",
+       title = "Distribution of G3")
+g_box <- ggplot(dat, aes(y = G3)) +
+  geom_boxplot(fill = "lightsteelblue", width = 0.4) +
+  labs(x = NULL, y = "G3", title = "Boxplot") +
+  theme(axis.text.x = element_blank())
+g_hist + g_box + plot_layout(widths = c(3, 1))
+```
+
+```{r eda-outcome-stats}
+# Full descriptive stats for the outcome, incl. skewness & kurtosis (e1071).
+q <- quantile(dat$G3, c(.25, .5, .75))
+os <- data.frame(
+  n = length(dat$G3), mean = mean(dat$G3), sd = sd(dat$G3),
+  min = min(dat$G3), Q1 = q[1], median = q[2], Q3 = q[3],
+  max = max(dat$G3), IQR = IQR(dat$G3),
+  skew = e1071::skewness(dat$G3), kurt = e1071::kurtosis(dat$G3))
+knitr::kable(os, row.names = FALSE, digits = 2,
+             caption = "Outcome G3: full summary statistics (skewness & kurtosis from e1071).")
+```
+
+`G3` is centered near `r round(mean(dat$G3),1)` (sd `r round(sd(dat$G3),1)`) and would look roughly
+bell-shaped were it not for a conspicuous **floor spike at 0**: `r sum(dat$G3==0)` students
+(`r round(100*mean(dat$G3==0))`%) are recorded with a zero final grade --- students who did not sit,
+or failed outright, the final. That spike pulls the mean below the median and gives a mild **left
+skew** (skewness `r round(e1071::skewness(dat$G3),2)`); the small negative excess kurtosis says the
+non-zero mass is a touch flatter than a normal. This is *floor inflation*, not classic right-skew, so
+a log/sqrt transform would not help --- and a plain OLS (the paper's model) simply treats the zeros as
+genuine low grades. We keep `G3` untransformed to stay faithful to the reproduction, but flag the
+zeros as the main reason the achievable $R^2$ is capped.
+
+## Univariate distributions of the predictors
+
+```{r eda-num-univ, fig.height=3.2, fig.cap="Numeric/ordinal predictors used downstream. Medu and goout are discrete ordinal scales; age is right-skewed (a few older repeaters); absences is heavily right-skewed with a spike at zero."}
+num_pred <- c("Medu", "goout", "age", "absences")
+long <- dat |>
+  select(all_of(num_pred)) |>
+  tidyr::pivot_longer(everything(), names_to = "var",
+                      values_to = "value")
+ggplot(long, aes(value)) +
+  geom_histogram(bins = 20, fill = "steelblue", colour = "white") +
+  facet_wrap(~ var, scales = "free", ncol = 2) +
+  labs(x = NULL, y = "count",
+       title = "Univariate distributions of the numeric predictors")
+```
+
+```{r eda-num-tab}
+# Full summary table for the numeric predictors, including skew.
+sumrow <- function(v) {
+  x <- dat[[v]]; q <- quantile(x, c(.25, .5, .75))
+  data.frame(variable = v, n = sum(!is.na(x)),
+             n_miss = sum(is.na(x)), mean = mean(x), sd = sd(x),
+             min = min(x), Q1 = q[1], median = q[2], Q3 = q[3],
+             max = max(x), skew = e1071::skewness(x))
+}
+num_tab <- do.call(rbind, lapply(num_pred, sumrow))
+knitr::kable(num_tab, row.names = FALSE, digits = 2,
+             caption = "Numeric predictors: full summary statistics. Medu/goout/age enter the model; absences is the Day-1 flexibility knob.")
+```
+
+`Medu` and `goout` are short ordinal scales that behave like coarse counts; both are fairly
+symmetric. `age` is mildly right-skewed --- most students are 15--18, with a thin tail of older
+repeaters up to 22. `absences` is the extreme case: strongly **right-skewed** (skew
+`r round(e1071::skewness(dat$absences),1)`), a large mass at zero, and a long thin tail (max
+`r max(dat$absences)`). That heavy skew is exactly why the paper's outlier-imputation step touches it
+and why, later, a high-degree polynomial in `absences` is so prone to chase the few extreme points.
+
+```{r eda-cat-univ, fig.height=2.6, fig.cap="The two binary predictors. Most students are NOT in a romantic relationship and do NOT receive extra school support; both classes are moderately imbalanced."}
+cat_pred <- c("romantic", "schoolsup")
+catlong <- dat |>
+  select(all_of(cat_pred)) |>
+  mutate(across(everything(), as.character)) |>
+  tidyr::pivot_longer(everything(), names_to = "var",
+                      values_to = "level")
+ggplot(catlong, aes(level)) +
+  geom_bar(fill = "darkseagreen4") +
+  facet_wrap(~ var, scales = "free_x") +
+  labs(x = NULL, y = "count",
+       title = "Binary predictor frequencies")
+```
+
+```{r eda-cat-tab}
+cat_tab <- rbind(
+  romantic  = table(dat$romantic),
+  schoolsup = table(dat$schoolsup))
+cat_tab <- cbind(cat_tab,
+                 prop_yes = round(cat_tab[, "yes"] / rowSums(cat_tab), 3))
+knitr::kable(cat_tab,
+             caption = "Binary predictors: frequency counts and proportion 'yes'.")
+```
+
+About `r round(100*mean(dat$romantic=="yes"))`% of students report being in a romantic relationship
+and only `r round(100*mean(dat$schoolsup=="yes"))`% receive extra educational support. Neither class
+is so rare as to be unusable, but `schoolsup` in particular is imbalanced --- worth remembering when
+its coefficient turns out to be one of the largest in the model.
+
+## Missing-data analysis
+
+```{r eda-missing}
+# Per-variable missing counts/percentages across the WHOLE frame.
+miss <- sapply(dat, function(x) sum(is.na(x)))
+miss_tab <- data.frame(
+  variable = names(miss), n_missing = as.integer(miss),
+  pct_missing = round(100 * miss / nrow(dat), 2))
+miss_tab <- miss_tab[order(-miss_tab$n_missing), ]
+cat("Complete cases:", sum(complete.cases(dat)), "of", nrow(dat), "\n")
+cat("Total missing cells:", sum(miss), "\n")
+knitr::kable(head(miss_tab, 6), row.names = FALSE,
+             caption = "Missingness by variable (top rows). The analysis frame is complete.")
+```
+
+The distributed UCI dataset is **fully complete** --- every one of the `r nrow(dat)` rows is a
+complete case, so there is no missingness pattern to model and no co-missing variables. The only `NA`s
+in this pipeline are **transient and self-inflicted**: the paper's preprocessing sets boxplot outliers
+in `Medu`, `goout`, and `age` to `NA` and immediately mean-imputes them inside `impute_outliers()`, so
+by the time we describe or model the data there are zero missing cells. Because that imputation is
+deterministic and mean-based (not model-based), it cannot leak outcome information --- it just softens
+a handful of extreme predictor values.
+
+## Bivariate relationships with the outcome
+
+```{r eda-bivar-num, fig.height=3.0, fig.cap="G3 against the two ordinal model predictors, as grouped boxplots. Higher mother's education tracks higher final grades; more frequent going-out tracks lower grades."}
+b1 <- ggplot(dat, aes(factor(round(Medu)), G3)) +
+  geom_boxplot(fill = "lightsteelblue") +
+  labs(x = "Mother's education (Medu)", y = "G3",
+       title = "G3 by Medu")
+b2 <- ggplot(dat, aes(factor(round(goout)), G3)) +
+  geom_boxplot(fill = "lightsalmon") +
+  labs(x = "Going out (goout)", y = "G3", title = "G3 by goout")
+b1 + b2
+```
+
+```{r eda-bivar-abs, fig.height=2.9, fig.cap="G3 vs. absences with linear (solid) and loess (dashed) smoothers. The association is weak and nearly flat past a few absences --- little curvature for a flexible model to exploit."}
+ggplot(dat, aes(absences, G3)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "lm", se = FALSE, colour = "steelblue") +
+  geom_smooth(method = "loess", se = FALSE, colour = "firebrick",
+              linetype = 2) +
+  labs(x = "Absences (count)", y = "G3",
+       title = "G3 vs. absences")
+```
+
+```{r eda-bivar-cat, fig.height=2.9, fig.cap="G3 by the two binary predictors. Students in a romantic relationship and those receiving extra school support score slightly lower on average."}
+v1 <- ggplot(dat, aes(romantic, G3)) +
+  geom_violin(fill = "plum3", alpha = 0.6) +
+  stat_summary(fun = mean, geom = "point", colour = "black") +
+  labs(x = "romantic", y = "G3", title = "G3 by romantic")
+v2 <- ggplot(dat, aes(schoolsup, G3)) +
+  geom_violin(fill = "khaki3", alpha = 0.6) +
+  stat_summary(fun = mean, geom = "point", colour = "black") +
+  labs(x = "schoolsup", y = "G3", title = "G3 by schoolsup")
+v1 + v2
+```
+
+```{r eda-bivar-tab}
+# One tidy table: each predictor's marginal association with G3.
+num_assoc <- lapply(c("Medu", "goout", "age", "absences"), function(v) {
+  ct <- cor.test(dat[[v]], dat$G3)
+  data.frame(predictor = v, kind = "numeric",
+             effect = round(unname(ct$estimate), 3),
+             effect_type = "Pearson r",
+             p_value = signif(ct$p.value, 2))
+})
+cat_assoc <- lapply(c("romantic", "schoolsup"), function(v) {
+  mm <- tapply(dat$G3, dat[[v]], mean)
+  tt <- t.test(G3 ~ dat[[v]], data = dat)
+  data.frame(predictor = v, kind = "binary",
+             effect = round(unname(mm["yes"] - mm["no"]), 3),
+             effect_type = "mean(yes)-mean(no)",
+             p_value = signif(tt$p.value, 2))
+})
+assoc <- do.call(rbind, c(num_assoc, cat_assoc))
+knitr::kable(assoc, row.names = FALSE,
+             caption = "Marginal association of each predictor with G3 (Pearson r for numeric; yes-minus-no grade gap with a two-sample t-test for binary).")
+```
+
+The bivariate picture lines up cleanly with the published coefficient signs: **`Medu` is positively**
+associated with `G3` (r `r round(cor(dat$Medu, dat$G3),2)`), while `goout`, `age`, being in a
+`romantic` relationship, and needing `schoolsup` all pull grades **down**. Every marginal effect is
+small in magnitude --- foreshadowing the modest $R^2$ ahead --- and, importantly, the `G3`--`absences`
+relationship is weak and essentially **flat** past a handful of absences, so there is very little
+curvature for a flexible model to exploit.
+
+## Multivariate structure and collinearity
+
+```{r eda-corr-heat, fig.height=3.2, fig.cap="Correlation heatmap among G3 and the numeric predictors. All off-diagonal correlations are weak (|r| < 0.25); nothing approaches the |r| > 0.7 collinearity threshold."}
+ggcorr(dat[, c("G3", num_pred)], label = TRUE, label_round = 2,
+       hjust = 0.85, layout.exp = 1) +
+  labs(title = "Correlations among G3 and numeric predictors")
+```
+
+```{r eda-corr-tab}
+cmat <- cor(dat[, c("G3", num_pred)])
+knitr::kable(round(cmat, 3),
+             caption = "Pearson correlations among G3 and the numeric predictors.")
+```
+
+```{r eda-vif}
+# Variance-inflation factors from the reproduction model (base-R, no car).
+vif_base <- function(fit) {
+  X <- model.matrix(fit)[, -1, drop = FALSE]
+  vapply <- sapply(colnames(X), function(nm) {
+    others <- setdiff(colnames(X), nm)
+    r2 <- summary(lm(X[, nm] ~ X[, others]))$r.squared
+    1 / (1 - r2)
+  })
+  vapply
+}
+fit_for_vif <- lm(G3 ~ Medu + goout + romantic + age + schoolsup,
+                  data = dat)
+vt <- data.frame(term = names(vif_base(fit_for_vif)),
+                 VIF = round(unname(vif_base(fit_for_vif)), 2))
+knitr::kable(vt, row.names = FALSE,
+             caption = "Variance-inflation factors for the reproduced OLS. All near 1: no collinearity.")
+```
+
+Correlations among the predictors are uniformly weak (all $|r| < 0.25$, well under the $|r| > 0.7$
+rule of thumb), and every **VIF is essentially 1** --- there is **no collinearity concern**. Each
+predictor contributes largely independent information, which means the OLS coefficients are stable and
+individually interpretable (no variance inflation to worry about). The correlations *with* `G3` are
+likewise small, so we should expect a **modest but real** predictive signal, no collinearity trouble,
+and --- crucially for Day 1 --- little genuine nonlinearity, so the validation curve should favor a
+**low** polynomial degree.
+
+## Reproduced regression vs. published
+
+```{r reproduce}
+form <- G3 ~ Medu + goout + romantic + age + schoolsup
+fit_ols <- lm(form, data = dat)
+
+published <- c(`(Intercept)` = 17.7935, Medu = 0.8627, goout = -0.5603,
+               romanticyes = -1.2458, age = -0.4423, schoolsupyes = -1.6562)
+repro <- round(coef(fit_ols)[names(published)], 4)
+cmp <- data.frame(term = names(published),
+                  published = published,
+                  reproduced = repro,
+                  abs_diff = abs(published - repro))
+knitr::kable(cmp, row.names = FALSE, digits = 4,
+             caption = "Reproduction gate: published (El Aissaoui et al. Model 6) vs. reproduced OLS coefficients.")
+stopifnot(all(cmp$abs_diff < 1e-3))
+cat("GATE PASSED: all six coefficients match to 4 decimals.\n")
+```
+
+Every coefficient matches the printed table to four decimal places. The gate is passed; we now keep
+this model fixed as the **reproduced baseline** and use its outcome (`G3`) and predictor set to
+demonstrate the full Day-1 model-evaluation toolkit.
+
+\newpage
+
+# Day 1: Model evaluation
+
+Everything below uses the **same outcome (`G3`) and the same five predictors** as the reproduced OLS,
+so that every evaluation idea is anchored to the published model.
+
+## Predictive vs. explanatory framing (Shmueli)
+
+The published paper is written in an **explanatory** register: it fits OLS to *understand which
+student attributes are associated with the final grade* (mother's education helps; going out, being
+older, being in a relationship, and needing extra support are associated with lower grades). The
+coefficient signs and significance are the deliverable.
+
+A **predictive** register (Shmueli 2010, *"To Explain or to Predict?"*) asks a different question:
+*how well would this model forecast the grade of a student it has never seen?* Explanatory fit
+(in-sample $R^2$, coefficient p-values) and predictive accuracy (held-out error) are **not the same
+number**, and optimizing one does not optimize the other. Day 1 is about measuring the *predictive*
+quantity honestly --- which requires holding data out.
+
+```{r insample-r2}
+sm <- summary(fit_ols)
+cat("In-sample R^2:", round(sm$r.squared, 4),
+    "| adjusted R^2:", round(sm$adj.r.squared, 4), "\n")
+```
+
+## In-sample optimism: the gap
+
+A model scored on the **same** rows used to fit it flatters itself: it has partly memorized the noise.
+The honest number comes from rows held out of fitting. Below we contrast in-sample $R^2$/RMSE with a
+single held-out estimate.
+
+```{r optimism}
+rmse <- function(y, yhat) sqrt(mean((y - yhat)^2))
+mae  <- function(y, yhat) mean(abs(y - yhat))
+r2   <- function(y, yhat) 1 - sum((y - yhat)^2) / sum((y - mean(y))^2)
+
+# in-sample
+yhat_in <- predict(fit_ols)
+insamp <- c(RMSE = rmse(dat$G3, yhat_in), R2 = summary(fit_ols)$r.squared)
+
+# honest held-out (single split, detailed next section)
+n <- nrow(dat)
+idx <- sample(n, size = floor(0.7 * n))
+tr <- dat[idx, ]; te <- dat[-idx, ]
+fit_tr <- lm(form, data = tr)
+yhat_te <- predict(fit_tr, te)
+holdout <- c(RMSE = rmse(te$G3, yhat_te), R2 = r2(te$G3, yhat_te))
+
+opt <- rbind(`In-sample` = insamp, `Held-out (test)` = holdout)
+knitr::kable(round(opt, 4), caption = "In-sample optimism: the same model looks better on the data it was fit to.")
+cat("Optimism gap in R^2:", round(insamp["R2"] - holdout["R2"], 4), "\n")
+```
+
+The in-sample $R^2$ is the model's optimistic self-report; the held-out $R^2$ is what we would
+actually see on new students. The difference is *optimism*, and it is exactly why we hold data out.
+
+## Data splitting: a single train/test split, then k-fold CV
+
+**Single split.** We already did one 70/30 split above. A single split is cheap but noisy --- its
+answer wobbles depending on which rows happened to land in the test set.
+
+**k-fold cross-validation.** We reduce that noise by rotating the held-out fold. We write the folds
+out explicitly so the mechanism is transparent.
+
+```{r kfold}
+K <- 10
+folds <- sample(rep(1:K, length.out = n))    # explicit fold assignment for every row
+cat("Fold sizes:\n"); print(table(folds))
+
+cv_lm <- function(formula, data, folds) {
+  K <- max(folds); rm <- ma <- rs <- numeric(K)
+  for (k in 1:K) {
+    trk <- data[folds != k, ]; tek <- data[folds == k, ]
+    fk  <- lm(formula, data = trk)
+    pk  <- predict(fk, tek)
+    rm[k] <- rmse(tek$G3, pk); ma[k] <- mae(tek$G3, pk); rs[k] <- r2(tek$G3, pk)
+  }
+  c(RMSE = mean(rm), MAE = mean(ma), R2 = mean(rs))
+}
+cv_ols <- cv_lm(form, dat, folds)
+knitr::kable(t(round(cv_ols, 4)),
+             caption = "10-fold CV of the reproduced OLS (matches the paper's Table 3 Model 6: RMSE 4.368, R2 0.103, MAE 3.301).")
+```
+
+The k-fold estimate reproduces the paper's own reported cross-validated numbers (Table 3, Model 6:
+RMSE $\approx 4.368$, $R^2 \approx 0.103$, MAE $\approx 3.301$) --- a second, independent confirmation
+that we reproduced *their* pipeline, not just their coefficients.
+
+## Bias--variance tradeoff: a validation curve
+
+Our **flexibility knob for Day 1 is the degree of a polynomial** --- the simplest knob that stays
+entirely within OLS (we just add `poly()` terms inside `lm`). We take the continuous count predictor
+`absences` (34 distinct values, the most continuous variable in the frame) and fit polynomials of
+increasing degree in it, added on top of the five published predictors. Low degree = high bias
+(underfit); high degree = high variance (overfit). Training error should fall monotonically; test
+error should be U-shaped.
+
+```{r bias-variance, fig.cap="Validation curve. Training RMSE (blue) falls monotonically as polynomial degree grows; 10-fold CV RMSE (red) is U-shaped --- the signature of the bias-variance tradeoff."}
+# Flexibility knob = polynomial degree in the continuous predictor `absences`,
+# added on top of the reproduced OLS predictors.
+poly_formula <- function(pred, d)
+  as.formula(sprintf(
+    "G3 ~ poly(%s, %d) + Medu + goout + romantic + age + schoolsup", pred, d))
+
+degrees <- 1:8
+train_rmse <- cv_rmse <- numeric(length(degrees))
+for (j in seq_along(degrees)) {
+  f_j <- poly_formula("absences", degrees[j])
+  # training error (in-sample)
+  fit_j <- lm(f_j, data = dat)
+  train_rmse[j] <- rmse(dat$G3, predict(fit_j))
+  # honest CV error
+  rmk <- numeric(K)
+  for (k in 1:K) {
+    trk <- dat[folds != k, ]; tek <- dat[folds == k, ]
+    fk <- lm(f_j, data = trk)
+    rmk[k] <- rmse(tek$G3, predict(fk, tek))
+  }
+  cv_rmse[j] <- mean(rmk)
+}
+bv <- data.frame(degree = degrees, train = train_rmse, cv = cv_rmse)
+
+plot(bv$degree, bv$cv, type = "b", pch = 19, col = "firebrick",
+     ylim = range(c(bv$train, bv$cv)),
+     xlab = "Polynomial degree of absences (flexibility)", ylab = "RMSE",
+     main = "Validation curve: bias-variance tradeoff")
+lines(bv$degree, bv$train, type = "b", pch = 17, col = "steelblue")
+best_d <- bv$degree[which.min(bv$cv)]
+abline(v = best_d, lty = 3)
+legend("topleft", legend = c("10-fold CV (test) RMSE", "Training RMSE",
+       sprintf("CV-optimal degree = %d", best_d)),
+       col = c("firebrick", "steelblue", "black"), pch = c(19, 17, NA),
+       lty = c(1, 1, 3), bty = "n", cex = 0.85)
+knitr::kable(round(bv, 4), caption = "Training vs. 10-fold CV RMSE across polynomial degree.")
+```
+
+Training RMSE decreases as we raise the degree (the polynomial can trace more wiggles), but CV RMSE
+bottoms out at a low degree and then rises --- added flexibility beyond that point is fitting noise,
+not signal. The near-flat relationship of `G3` on `absences` we saw in the descriptives means the
+honest optimum sits at a **low degree** (`r best_d`), confirming the paper's linear choice was
+reasonable.
+
+## Performance metrics for a continuous outcome, vs. a naive baseline
+
+`G3` is continuous, so the relevant metrics are **RMSE, MAE, and $R^2$**. A metric is only
+interpretable against a **naive baseline** --- here, predicting the training-set mean grade for
+everyone. $R^2 > 0$ literally means "beats the mean baseline."
+
+```{r metric-suite}
+# naive baseline: predict the (training) mean for all test rows, under the same 10-fold protocol
+cv_baseline <- function(data, folds) {
+  K <- max(folds); rm <- ma <- rs <- numeric(K)
+  for (k in 1:K) {
+    trk <- data[folds != k, ]; tek <- data[folds == k, ]
+    pk <- rep(mean(trk$G3), nrow(tek))
+    rm[k] <- rmse(tek$G3, pk); ma[k] <- mae(tek$G3, pk); rs[k] <- r2(tek$G3, pk)
+  }
+  c(RMSE = mean(rm), MAE = mean(ma), R2 = mean(rs))
+}
+base <- cv_baseline(dat, folds)
+
+metric_tab <- rbind(`Naive (mean) baseline` = base,
+                    `Reproduced OLS`        = cv_ols)
+knitr::kable(round(metric_tab, 4),
+             caption = "Full metric suite (10-fold CV): reproduced OLS vs. naive mean baseline.")
+cat("OLS reduces held-out RMSE by",
+    round(100 * (base["RMSE"] - cv_ols["RMSE"]) / base["RMSE"], 1),
+    "% vs. the naive baseline.\n")
+```
+
+The OLS beats the mean baseline, but modestly ($R^2 \approx 0.10$): these five demographic/behavioral
+predictors explain only about a tenth of grade variance --- an honest, teachable result. (The huge
+predictive lift in this dataset comes from prior grades `G1`/`G2`, which the paper deliberately
+excludes; we keep its predictor set fixed to stay faithful to the reproduction.)
+
+## Hyperparameters vs. parameters; grid search and random search
+
+**Parameters** are learned by fitting (the OLS coefficients). **Hyperparameters** are knobs *we* set
+before fitting and must tune by held-out performance. Our hyperparameter is the **polynomial degree**
+from the validation curve above. We tune it two ways, each scored by the same 10-fold CV:
+
+- **Grid search** --- sweep a regular ladder of degrees $1,2,\dots,8$ for the chosen predictor.
+- **Random search** --- randomly sample *both* the degree *and which continuous predictor* gets the
+  polynomial (from `absences`, `age`, `goout`). This shows random search exploring a two-dimensional
+  hyperparameter space (predictor $\times$ degree) that a fixed grid would have to enumerate in full.
+
+Everything stays OLS-based (`poly()` inside `lm`), so nothing beyond Day-1 material is used.
+
+```{r poly-search-helpers}
+# Largest polynomial degree that is valid in EVERY training fold for a predictor
+# (poly(x, d) requires d < number of distinct x within each fold).
+max_valid_degree <- function(pred, folds)
+  min(sapply(1:max(folds),
+             function(k) length(unique(dat[[pred]][folds != k])))) - 1
+
+# CV RMSE for a given predictor + polynomial degree, using poly() inside lm.
+# Degree is capped to what is valid for the predictor, so low-cardinality
+# predictors (e.g. age, goout) never break poly().
+poly_cv <- function(pred, d, folds) {
+  d <- min(d, max_valid_degree(pred, folds))
+  f <- poly_formula(pred, d)
+  K <- max(folds); rm <- numeric(K)
+  for (k in 1:K) {
+    trk <- dat[folds != k, ]; tek <- dat[folds == k, ]
+    fk <- lm(f, data = trk)
+    rm[k] <- rmse(tek$G3, predict(fk, tek))
+  }
+  mean(rm)
+}
+```
+
+```{r grid-search, fig.cap="Hyperparameter validation curve. Grid search sweeps a regular ladder of polynomial degrees for absences; random search samples degree-and-predictor pairs at random. Both minimize 10-fold CV RMSE at a low degree."}
+# GRID search: regular ladder of degree for `absences`
+grid_deg  <- 1:8
+grid_rmse <- sapply(grid_deg, function(d) poly_cv("absences", d, folds))
+grid_best <- grid_deg[which.min(grid_rmse)]
+
+# RANDOM search: sample (predictor, degree) pairs at random
+set.seed(99)
+cont_preds <- c("absences", "age", "goout")
+n_draws    <- 15
+rand_pred  <- sample(cont_preds, n_draws, replace = TRUE)
+rand_deg   <- sample(1:8, n_draws, replace = TRUE)
+# effective degree actually fit (capped to what each predictor supports)
+rand_deg   <- mapply(function(p, d) min(d, max_valid_degree(p, folds)),
+                     rand_pred, rand_deg)
+rand_rmse  <- mapply(function(p, d) poly_cv(p, d, folds), rand_pred, rand_deg)
+rb         <- which.min(rand_rmse)
+rand_best_pred <- rand_pred[rb]; rand_best_deg <- rand_deg[rb]
+
+plot(grid_deg, grid_rmse, type = "b", pch = 19, col = "darkgreen",
+     ylim = range(c(grid_rmse, rand_rmse)),
+     xlab = "Polynomial degree -- a hyperparameter", ylab = "10-fold CV RMSE",
+     main = "Grid vs. random hyperparameter search (polynomial degree)")
+points(rand_deg, rand_rmse, pch = 4, cex = 1.3, col = "purple", lwd = 2)
+abline(h = cv_ols["RMSE"], lty = 2, col = "gray40")
+legend("topright",
+       legend = c(sprintf("Grid search on absences (best deg=%d)", grid_best),
+                  sprintf("Random search (best: %s deg=%d)", rand_best_pred, rand_best_deg),
+                  "Reproduced OLS CV RMSE"),
+       col = c("darkgreen", "purple", "gray40"),
+       pch = c(19, 4, NA), lty = c(1, NA, 2), bty = "n", cex = 0.8)
+
+search_tab <- data.frame(
+  method   = c("Grid search", "Random search"),
+  best_config = c(sprintf("absences, deg %d", grid_best),
+                  sprintf("%s, deg %d", rand_best_pred, rand_best_deg)),
+  cv_rmse  = round(c(min(grid_rmse), min(rand_rmse)), 4),
+  evals    = c(length(grid_deg), n_draws))
+knitr::kable(search_tab, row.names = FALSE,
+             caption = "Grid vs. random search over the polynomial-degree hyperparameter.")
+```
+
+Degree 1 (plain OLS) is high-bias only in the sense that it ignores any curvature; raising the degree
+lets the fit wiggle but quickly starts chasing noise, so CV RMSE turns back up --- the same
+bias-variance logic, now applied to *tuning* rather than to a single fit. Grid search is exhaustive
+along one dimension but pays for a fixed ladder; random search reaches a comparable optimum while also
+exploring *which* predictor to bend, which is why it scales better as the hyperparameter space grows.
+
+## Closing the loop: back to the reproduced regression
+
+```{r final-compare}
+final <- rbind(
+  `Naive mean baseline`          = base["RMSE"],
+  `Reproduced OLS (published)`   = cv_ols["RMSE"],
+  `CV-best polynomial (tuned)`   = min(grid_rmse))
+colnames(final) <- "CV RMSE"
+knitr::kable(round(final, 4),
+             caption = "Everything scored under one honest 10-fold protocol.")
+```
+
+Under a single honest protocol, the **published OLS is the model to beat**: the CV-best polynomial
+does not clearly improve on it here, because --- as the descriptives warned --- there is little
+nonlinear structure in these five weak predictors to exploit, so the tuning lands right back at (or
+next to) degree 1. That is the central Day-1 lesson --- *the right comparison is always out-of-sample
+and always against a baseline*, and a simple, interpretable regression can be fully competitive once
+every model is evaluated honestly.
+
+# Takeaway
+
+We exactly reproduced El Aissaoui et al.'s (2020) best OLS for predicting secondary-school final
+Mathematics grades (all six coefficients match to four decimals, and the 10-fold CV metrics match
+their Table 3). Extending it into a Day-1 evaluation lab showed the optimism gap between in-sample
+and held-out fit, the bias-variance tradeoff via a polynomial-degree validation curve, the full
+continuous-metric suite against a naive baseline, and grid/random hyperparameter search over the
+polynomial degree. The honest verdict: these five demographic/behavioral predictors explain only
+about 10% of grade variance, and no added flexibility beats the simple published regression out of
+sample --- a clean illustration that evaluation, not model complexity, is what tells you whether you
+have learned anything.

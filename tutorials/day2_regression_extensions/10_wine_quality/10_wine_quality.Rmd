@@ -9,14 +9,20 @@ geometry: margin=1in
 fontsize: 10pt
 header-includes:
   - \usepackage{fvextra}
-  - \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,breakanywhere,commandchars=\\\{\}}
-  - \DefineVerbatimEnvironment{verbatim}{Verbatim}{breaklines,breakanywhere}
+  - \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+  - \DefineVerbatimEnvironment{verbatim}{Verbatim}{breaklines}
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
                       fig.width = 6.5, fig.height = 3.6, fig.align = "center")
-options(width = 82)
+options(width = 80)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(knitr)
+library(patchwork)
+library(e1071)
 ```
 
 > **Published study.** Cortez, P. et al. (2009). "Modeling wine preferences by data mining from physicochemical
@@ -47,29 +53,212 @@ Cortez and colleagues ask whether **objective physicochemical measurements** of 
 | `sulphates` | potassium sulphate additive (g/L) |
 | `alcohol` | alcohol (% by volume) |
 
-# Descriptive results
+# Descriptive analysis
 
 ```{r data}
-url <- "https://raw.githubusercontent.com/bdesmarais/intro-ml-statistical-horizons-4day/main/tutorials/day2_regression_extensions/10_wine_quality/data/winequality-red.csv"
+url <- paste0(
+  "https://raw.githubusercontent.com/bdesmarais/",
+  "intro-ml-statistical-horizons-4day/main/",
+  "tutorials/day2_regression_extensions/10_wine_quality/data/winequality-red.csv")
 d <- read.csv(url, sep = ";")
 names(d) <- make.names(names(d))
 preds <- setdiff(names(d), "quality")
-
-round(t(sapply(d, function(x) c(mean = mean(x), sd = sd(x), min = min(x), max = max(x)))), 3)
 ```
 
-```{r desc-plot, fig.height=3, fig.cap="Quality-score distribution (left) and each predictor's correlation with quality (right)."}
-par(mfrow = c(1, 2))
-par(mar = c(4, 4, 2.5, 1))
-barplot(table(d$quality), col = "#a6cee3", border = "white", main = "Outcome: quality",
-        xlab = "sensory score", ylab = "count")
-cors <- sort(sapply(d[preds], function(x) cor(x, d$quality)))
-par(mar = c(4, 8, 2.5, 1))
-barplot(cors, horiz = TRUE, las = 1, cex.names = 0.8,
-        col = ifelse(cors > 0, "#1f78b4", "#e31a1c"), main = "Correlation with quality",
-        xlab = "correlation")
-abline(v = 0, col = "grey50")
+## Dataset and provenance
+
+The unit of analysis is a single bottling of red *Vinho Verde* wine from the
+north of Portugal. Each row is one physical wine sample, characterized by
+laboratory measurements of its chemistry and by a sensory quality score. The
+data were assembled by Cortez et al. (2009) from the official certification
+records of the Portuguese *Comissao de Viticultura da Regiao dos Vinhos Verdes*
+between May 2004 and February 2007; the physicochemical variables come from
+routine certification assays and the outcome is the median score of at least
+three blind tasters on a 0-10 scale. Only red wines are analyzed here.
+
+```{r dims}
+c(n_rows = nrow(d), n_cols = ncol(d),
+  n_predictors = length(preds), n_complete = sum(complete.cases(d)))
 ```
+
+All `r ncol(d)` variables are numeric: `r length(preds)` continuous
+physicochemical predictors and one integer-valued sensory outcome. There are no
+categorical variables, no identifiers, and (as shown below) no missing values.
+
+The codebook table in the previous section gives each variable's definition,
+units, and role. Every predictor is a *continuous* physicochemical measurement;
+`quality` is the *ordinal/integer* outcome. Because the design is observational
+(wines are certified as they arrive, not sampled experimentally), the analysis
+is predictive/associational rather than causal.
+
+## The outcome in depth
+
+```{r outcome-stats}
+q <- d$quality
+osum <- data.frame(
+  n = length(q), mean = mean(q), sd = sd(q), min = min(q),
+  Q1 = quantile(q, .25), median = median(q), Q3 = quantile(q, .75),
+  max = max(q), IQR = IQR(q),
+  skew = e1071::skewness(q), kurtosis = e1071::kurtosis(q))
+kable(round(osum, 3), row.names = FALSE,
+      caption = "Summary statistics for the sensory quality score.")
+```
+
+```{r outcome-plot, fig.height=3, fig.cap="Distribution of the sensory quality score."}
+ggplot(d, aes(x = factor(quality))) +
+  geom_bar(fill = "#1f78b4", width = 0.75) +
+  labs(x = "sensory quality score", y = "count") +
+  theme_minimal(base_size = 11)
+```
+
+The outcome is an **integer rating that is heavily concentrated at 5 and 6**:
+those two scores account for the large majority of wines, while the extremes
+(3, 4, 7, 8) are rare and no wine scored below 3 or above 8. The distribution is
+roughly symmetric (skew =
+`r round(e1071::skewness(q), 2)`) but strongly **peaked / leptokurtic**
+(excess kurtosis = `r round(e1071::kurtosis(q), 2)`), reflecting how few
+observations fall in the tails. This has two modeling consequences. First, a log
+or power transform is **not** warranted -- the score is bounded, discrete, and
+symmetric, not right-skewed. Second, the narrow effective range means any model
+will struggle to distinguish "good" from "great" wines: there is little signal
+in the rare tails, so RMSE near the residual standard deviation of the score is
+about the best a smooth model can do. Linear regression treats this integer
+score as continuous, which is a defensible approximation given the symmetry.
+
+## Univariate predictor distributions
+
+```{r pred-summary}
+pstat <- function(x) c(
+  n = sum(!is.na(x)), n_miss = sum(is.na(x)),
+  mean = mean(x, na.rm = TRUE), sd = sd(x, na.rm = TRUE),
+  min = min(x, na.rm = TRUE),
+  Q1 = quantile(x, .25, na.rm = TRUE),
+  median = median(x, na.rm = TRUE),
+  Q3 = quantile(x, .75, na.rm = TRUE),
+  max = max(x, na.rm = TRUE),
+  skew = e1071::skewness(x, na.rm = TRUE))
+ptab <- t(sapply(d[preds], pstat))
+colnames(ptab) <- c("n", "n_miss", "mean", "sd", "min",
+                    "Q1", "median", "Q3", "max", "skew")
+kable(round(ptab, 3),
+      caption = "Univariate summary of the 11 physicochemical predictors.")
+```
+
+```{r pred-hist, fig.height=5, fig.cap="Distributions of the 11 physicochemical predictors (free scales)."}
+d %>%
+  pivot_longer(all_of(preds), names_to = "var", values_to = "val") %>%
+  ggplot(aes(x = val)) +
+  geom_histogram(bins = 30, fill = "#6baed6", colour = "white") +
+  facet_wrap(~ var, scales = "free", ncol = 3) +
+  labs(x = NULL, y = "count") +
+  theme_minimal(base_size = 9)
+```
+
+Several predictors are **strongly right-skewed** -- `residual.sugar`,
+`chlorides`, `free.sulfur.dioxide`, `total.sulfur.dioxide` and `sulphates` all
+have long upper tails (skew well above 1), indicating a minority of wines with
+extreme salt, sugar or sulfur levels. `alcohol` and the two acidity variables
+are milder but still positively skewed, while `density` and `pH` are close to
+symmetric. These heavy tails mean a handful of chemically unusual wines exert
+leverage on the linear regression; they are not data errors (all values are
+physically plausible) so we keep them, but they motivate the flexible/robust
+extensions considered later.
+
+## Missing-data analysis
+
+```{r missing}
+miss <- data.frame(
+  variable = names(d),
+  n_missing = sapply(d, function(x) sum(is.na(x))),
+  pct_missing = round(100 * sapply(d, function(x) mean(is.na(x))), 2))
+kable(miss, row.names = FALSE,
+      caption = "Missing-value counts by variable.")
+```
+
+The certification dataset is **fully complete**: every one of the
+`r nrow(d)` rows has all `r ncol(d)` fields recorded, so
+`r sum(complete.cases(d))` rows are usable in complete-case analysis. There is
+no missingness pattern to model and no imputation is needed; the reproduction
+below therefore uses every observation. This is expected given the data's
+origin in official laboratory assays where an incomplete certification record
+would simply not be issued.
+
+## Bivariate relationships with the outcome
+
+```{r biv-cor}
+cors <- sapply(d[preds], function(x) cor(x, d$quality))
+ctab <- data.frame(predictor = names(cors),
+                   cor_with_quality = round(as.numeric(cors), 3))
+ctab <- ctab[order(-abs(ctab$cor_with_quality)), ]
+kable(ctab, row.names = FALSE,
+      caption = "Pearson correlation of each predictor with quality, sorted by strength.")
+```
+
+```{r biv-plot, fig.height=5, fig.cap="Quality vs. the six predictors most correlated with it, with linear smoothers."}
+top6 <- ctab$predictor[1:6]
+d %>%
+  select(quality, all_of(top6)) %>%
+  pivot_longer(all_of(top6), names_to = "var", values_to = "val") %>%
+  ggplot(aes(x = val, y = quality)) +
+  geom_jitter(height = 0.2, alpha = 0.15, colour = "#333333") +
+  geom_smooth(method = "lm", se = FALSE, colour = "#e31a1c") +
+  facet_wrap(~ var, scales = "free_x", ncol = 3) +
+  labs(x = NULL, y = "quality") +
+  theme_minimal(base_size = 9)
+```
+
+The marginal-association table confirms the published story:
+**`alcohol` is by far the strongest single correlate of quality (positive)**,
+followed by **`volatile.acidity` (negative)** and `sulphates` (positive).
+`citric.acid` and the two acidity/density measures are moderate, and
+`residual.sugar`, `free.sulfur.dioxide` and `pH` are essentially uncorrelated
+with quality on their own. No single predictor exceeds |r| = 0.5, which
+foreshadows the modest linear fit -- quality is a weakly-signalled,
+multivariate function of the chemistry rather than a story about any one
+compound.
+
+## Multivariate structure and collinearity
+
+```{r corr-heat, fig.height=4.4, fig.cap="Correlation heatmap of the 11 physicochemical predictors."}
+cmat <- cor(d[preds])
+cmat[lower.tri(cmat)] <- NA
+as.data.frame(cmat) %>%
+  mutate(v1 = rownames(cmat)) %>%
+  pivot_longer(all_of(preds), names_to = "v2", values_to = "r") %>%
+  filter(!is.na(r)) %>%
+  mutate(v1 = factor(v1, levels = preds),
+         v2 = factor(v2, levels = rev(preds))) %>%
+  ggplot(aes(v1, v2, fill = r)) +
+  geom_tile(colour = "white") +
+  geom_text(aes(label = round(r, 2)), size = 2.4) +
+  scale_fill_gradient2(low = "#e31a1c", mid = "white", high = "#1f78b4",
+                       midpoint = 0, limits = c(-1, 1)) +
+  labs(x = NULL, y = NULL, fill = "r") +
+  theme_minimal(base_size = 8) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r vif}
+# VIF_j = 1 / (1 - R^2_j) from regressing predictor j on all other predictors
+vif <- sapply(preds, function(p) {
+  r2 <- summary(lm(reformulate(setdiff(preds, p), p), data = d))$r.squared
+  1 / (1 - r2)
+})
+kable(data.frame(predictor = names(vif), VIF = round(as.numeric(vif), 2)),
+      row.names = FALSE,
+      caption = "Variance inflation factors from the reproduction model.")
+```
+
+The heatmap shows the expected **chemical couplings**: `fixed.acidity` is
+strongly correlated with `citric.acid`, with `density` (r > 0.6), and
+negatively with `pH`; the two sulfur-dioxide measures move together. The only
+pairs exceeding **|r| > 0.7** involve `fixed.acidity` with `citric.acid` and
+`pH`, which is why `fixed.acidity` carries the largest VIF. Overall, however,
+the inflation factors stay in a moderate range (mostly < 5), so ordinary least
+squares coefficients remain interpretable -- collinearity blurs the individual
+acidity terms but does not destabilize the fit. This mild-but-real correlation
+structure is exactly what the regularization and tree-based extensions in the
+companion tutorials are designed to exploit.
 
 # Reproduce the published regression
 

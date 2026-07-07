@@ -1,0 +1,702 @@
+---
+title: "Model Uncertainty in Cross-Country Growth Regressions"
+subtitle: "Fernández, Ley & Steel (2001, *J. Applied Econometrics*) --- Reproduction and ML extension (Day 3: Regularization & Variable Selection)"
+author: "Intro-ML teaching tutorial"
+date: "`r format(Sys.Date())`"
+output:
+  pdf_document:
+    toc: true
+    number_sections: true
+    fig_width: 7
+    fig_height: 4.5
+header-includes:
+  - \setlength{\emergencystretch}{3em}
+  - \usepackage{booktabs}
+  - \usepackage{float}
+  - \usepackage{fvextra}
+  - \AtBeginDocument{\DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}}
+  - \AtBeginDocument{\DefineVerbatimEnvironment{verbatim}{Verbatim}{breaklines}}
+  - \fvset{breaklines=true}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.align = "center", fig.pos = "H")
+options(width = 95)
+set.seed(2024)
+```
+
+# The study and why it anchors a variable-selection lesson
+
+**Citation.** Carmen Fernández, Eduardo Ley & Mark F. J. Steel (2001), "Model
+uncertainty in cross-country growth regressions," *Journal of Applied
+Econometrics* **16**(5): 563--576. Data archive:
+`http://qed.econ.queensu.ca/jae/2001-v16.5/fernandez-ley-steel/` (also shipped,
+identically, in the R package **BMS** as `datafls`).
+
+**The economic problem.** Empirical growth economics asks: *which* national
+characteristics explain why some countries grew faster than others between 1960
+and 1992? Dozens of candidate determinants have been proposed --- initial GDP,
+schooling, life expectancy, religion shares, institutions, geography, trade
+openness, investment. Fernández, Ley & Steel assemble **41 candidate regressors
+for 72 countries** and confront the central difficulty head-on: with so many
+correlated predictors and so few observations, *no single regression is
+credible*. Their answer is Bayesian Model Averaging (BMA) --- average over all
+$2^{41}\approx 2.2\times10^{12}$ possible models, weighting each by its posterior
+probability, and report each variable's **posterior inclusion probability
+(PIP)**: the probability that its coefficient is non-zero.
+
+This is *exactly* the Day-3 problem --- many correlated predictors, standardization,
+and formal variable selection --- dressed in 2001 Bayesian clothing. We first
+**reproduce their headline result exactly**, then show what the modern
+regularization toolkit (ridge / lasso / elastic net / best-subset) adds and how
+its selections line up with their BMA verdict.
+
+```{r load}
+library(BMS)      # ships the exact FLS 2001 data as datafls; provides bms()
+d  <- read.csv(paste0(
+  "https://raw.githubusercontent.com/bdesmarais/",
+  "intro-ml-statistical-horizons-4day/main/",
+  "tutorials/day3_regularization_and_selection/fernandez_ley_steel_growth/data/fls_growth.csv"))   # a verbatim copy of BMS::datafls
+y  <- d$y                          # growth of real GDP per capita, 1960-1992
+X  <- as.matrix(d[, -1])           # the 41 candidate determinants
+p  <- ncol(X); n <- nrow(X)
+c(countries = n, predictors = p)
+```
+
+The outcome `y` is average annual growth of real per-capita GDP, 1960--1992
+(Penn World Table). Its mean is about 2.1% with s.d. 1.8%.
+
+# Descriptive analysis
+
+Before any modeling we meet the data properly. Good exploratory work is not a
+formality here: with **41 candidate predictors over only 72 countries**, the
+descriptive picture --- how the outcome is shaped, which predictors carry
+signal, and above all how tightly the predictors are entangled with one another
+--- *is* the argument for the model-averaging and regularization machinery that
+follows. This section is deliberately thorough.
+
+## Dataset, provenance and unit of analysis
+
+The **unit of analysis is a country**. The file `fls_growth.csv` is a verbatim
+copy of `BMS::datafls`, itself the exact dataset archived with Fernández, Ley &
+Steel (2001) at the *Journal of Applied Econometrics* data archive. There are
+**`r nrow(d)` countries** and **`r ncol(d)` columns** --- the growth outcome plus
+**`r ncol(d) - 1` candidate determinants**. Each row is a single cross-section:
+every variable is either an *initial-year* value (e.g. 1960 income, `GDP60`) or a
+*period average / summary* over the 1960--1992 growth window. There is therefore
+**no time dimension to exploit** --- this is one long, wide cross-section, not a
+panel. The 72 countries are those for which the full battery of 41 regressors was
+available; the sample is not a random draw but the intersection of several source
+datasets (Penn World Table, Barro--Lee, Sala-i-Martin's compilations), which is
+itself a mild selection caveat worth remembering when generalizing.
+
+```{r eda-types, echo=TRUE}
+# classify each predictor as 0/1 binary vs continuous
+pred      <- d[ , -1]                       # drop the outcome column
+is_binary <- sapply(pred, function(x) all(x %in% c(0, 1)))
+bin_vars  <- names(is_binary)[is_binary]    # 0/1 dummies
+num_vars  <- names(is_binary)[!is_binary]   # continuous / count
+data.frame(kind = c("continuous", "binary (0/1)", "total predictors"),
+           count = c(length(num_vars), length(bin_vars), ncol(pred)))
+```
+
+So of the 41 regressors, **`r length(num_vars)` are continuous** (incomes,
+enrolment shares, life expectancy, geography, investment ratios, ...) and
+**`r length(bin_vars)` are 0/1 indicators** (colonial heritage, region, war,
+trade orientation). A compact **variable dictionary** for the outcome and a
+representative slice of the modeling predictors:
+
+```{r eda-dictionary}
+dict <- read.csv(text = "
+variable,type,description
+y,continuous (outcome),Avg annual growth of real GDP per capita 1960-1992
+GDP60,continuous,Log real GDP per capita in 1960 (initial income)
+LifeExp,continuous,Life expectancy at birth (years) circa 1960
+EquipInv,continuous,Equipment investment share of GDP
+NequipInv,continuous,Non-equipment investment share of GDP
+PrScEnroll,continuous,Primary-school enrolment rate 1960
+HighEnroll,continuous,Higher-education enrolment rate
+RuleofLaw,continuous,Rule-of-law index (0-1)
+YrsOpen,continuous,Fraction of years economy open to trade
+Age,continuous,Age of national state / years since independence
+Abslat,continuous,Absolute latitude of the country
+Area,continuous,Land area
+Popg,continuous,Population growth rate
+Confucian,continuous,Fraction of population Confucian
+Muslim,continuous,Fraction of population Muslim
+Protestants,continuous,Fraction of population Protestant
+SubSahara,binary,=1 if Sub-Saharan Africa
+LatAmerica,binary,=1 if Latin America
+Spanish,binary,=1 former Spanish colony
+French,binary,=1 former French colony
+Brit,binary,=1 former British colony
+WarDummy,binary,=1 country took part in a war 1960-1990
+OutwarOr,binary,=1 outward-oriented trade regime
+", strip.white = TRUE)
+knitr::kable(dict, caption = "Variable dictionary (outcome + a representative subset of the 41 predictors). Continuous shares are proportions in [0,1] unless noted.")
+```
+
+The full set of 41 predictors is profiled in the summary table further below;
+the dictionary lists the outcome plus the highest-salience determinants and one
+example of each dummy family.
+
+## The outcome in depth: average GDP-per-capita growth, 1960--1992
+
+```{r eda-outcome, fig.height=3.4, fig.cap="Distribution of average annual growth of real GDP per capita, 1960--1992, across 72 countries. Solid red = kernel density; dashed = mean; dotted = median. The distribution is close to symmetric with a mild right lean and no extreme outliers."}
+library(ggplot2)
+ggplot(data.frame(y = d$y), aes(x = y)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 18,
+                 fill = "steelblue", colour = "white", alpha = 0.85) +
+  geom_density(colour = "firebrick", linewidth = 0.8) +
+  geom_vline(xintercept = mean(d$y),   linetype = 2) +
+  geom_vline(xintercept = median(d$y), linetype = 3) +
+  labs(x = "average annual growth, 1960-1992", y = "density") +
+  theme_minimal(base_size = 11)
+```
+
+A full numeric profile of the outcome, including shape diagnostics from
+**e1071** (skewness and excess kurtosis):
+
+```{r eda-outcome-stats}
+library(e1071)
+q <- quantile(d$y)
+out_stats <- data.frame(
+  statistic = c("n","mean","sd","min","Q1","median","Q3","max",
+                "IQR","skewness","kurtosis (excess)"),
+  value = round(c(length(d$y), mean(d$y), sd(d$y), min(d$y),
+                  q[2], median(d$y), q[4], max(d$y), IQR(d$y),
+                  skewness(d$y), kurtosis(d$y)), 4))
+knitr::kable(out_stats, row.names = FALSE,
+  caption = "Full summary of the outcome (annual GDP-per-capita growth rate).")
+```
+
+Growth ranges from about $-2\%$ (a handful of countries that *shrank* over three
+decades) to roughly $+7\%$ per year, centred near $+2\%$. The mean and median
+sit almost on top of each other, the skewness is small and positive
+(`r round(skewness(d$y), 2)`) and the excess kurtosis is near zero
+(`r round(kurtosis(d$y), 2)`) --- i.e. the distribution is close to Gaussian,
+with the right tail a touch heavier than the left because a few East-Asian
+"miracle" economies grew exceptionally fast. There is **no floor, ceiling, or
+zero-inflation**, and no observation is an obvious outlier. A log or Box--Cox
+transform of the outcome is therefore **not warranted**; growth enters the models
+on its natural scale, which also keeps the reproduction faithful to FLS.
+
+## Univariate distributions of the predictors
+
+For the continuous predictors, a faceted grid of histograms shows the spread of
+scales and shapes at a glance --- from tightly bounded [0,1] shares to
+heavy-tailed area and income variables. We show a representative dozen (the
+highest-salience determinants plus a couple of skewed geographic ones):
+
+```{r eda-num-grid, fig.height=4.6, fig.cap="Univariate distributions of twelve representative continuous predictors. Note the mix of near-symmetric variables (GDP60, LifeExp) and strongly skewed / bounded ones (Area, EquipInv, PrScEnroll), which is why penalized methods standardize before fitting."}
+library(dplyr)
+show_num <- c("GDP60","LifeExp","EquipInv","NequipInv","PrScEnroll",
+              "HighEnroll","RuleofLaw","YrsOpen","Age","Abslat",
+              "Popg","Area")
+long <- do.call(rbind, lapply(show_num, function(v)
+          data.frame(variable = v, value = d[[v]])))
+ggplot(long, aes(value)) +
+  geom_histogram(bins = 15, fill = "steelblue", colour = "white") +
+  facet_wrap(~ variable, scales = "free", ncol = 4) +
+  labs(x = NULL, y = "count") +
+  theme_minimal(base_size = 9)
+```
+
+A **full summary-statistics table for ALL `r length(num_vars)` continuous
+predictors** (rounded; `skew` from e1071) --- so nothing is hidden even though we
+only plot a subset:
+
+```{r eda-num-table}
+num_summary <- data.frame(
+  variable = num_vars,
+  n        = sapply(num_vars, function(v) sum(!is.na(d[[v]]))),
+  n_miss   = sapply(num_vars, function(v) sum(is.na(d[[v]]))),
+  mean     = round(sapply(num_vars, function(v) mean(d[[v]])), 3),
+  sd       = round(sapply(num_vars, function(v) sd(d[[v]])), 3),
+  min      = round(sapply(num_vars, function(v) min(d[[v]])), 3),
+  median   = round(sapply(num_vars, function(v) median(d[[v]])), 3),
+  max      = round(sapply(num_vars, function(v) max(d[[v]])), 3),
+  skew     = round(sapply(num_vars, function(v) e1071::skewness(d[[v]])), 2),
+  row.names = NULL)
+knitr::kable(num_summary, row.names = FALSE,
+  caption = "Summary statistics for all 34 continuous predictors (n, missing, mean, sd, min, median, max, skew). Scales differ by orders of magnitude, foreshadowing the need to standardize.")
+```
+
+The table makes the scaling problem concrete: `Area` and `RFEXDist` run into the
+thousands while enrolment and religion shares live in [0,1]. Left unstandardized,
+a single penalty would punish the large-scale variables far more than the shares
+--- which is exactly why every penalized fit below standardizes first.
+
+For the **`r length(bin_vars)` binary indicators**, base rates (the share of
+countries coded 1) are far more informative than a mean/sd, and a bar chart makes
+the class balance immediate:
+
+```{r eda-binary}
+bin_tab <- data.frame(
+  dummy      = bin_vars,
+  n_ones     = sapply(bin_vars, function(v) sum(d[[v]] == 1)),
+  proportion = round(sapply(bin_vars, function(v) mean(d[[v]])), 3))
+bin_tab <- bin_tab[order(-bin_tab$proportion), ]
+knitr::kable(bin_tab, row.names = FALSE,
+  caption = "Binary (0/1) indicators, with the share of countries coded 1.")
+```
+
+```{r eda-binary-bar, fig.height=2.8, fig.cap="Base rates of the seven 0/1 indicator predictors. Several are quite rare (e.g. outward-orientation), so their coefficients rest on few countries and are prime candidates for shrinkage."}
+ggplot(bin_tab, aes(x = reorder(dummy, proportion), y = proportion)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(x = NULL, y = "share of countries = 1") +
+  theme_minimal(base_size = 10)
+```
+
+Some dummies are rare --- only a handful of countries carry a 1 --- so any
+coefficient estimated for them leans on very little data, another reason the
+methods below prefer to shrink rather than trust raw OLS.
+
+## Missing-data analysis
+
+```{r eda-missing}
+miss_by_var <- colSums(is.na(d))
+data.frame(
+  metric = c("total missing cells", "variables with any NA",
+             "complete rows", "rows total"),
+  value  = c(sum(is.na(d)), sum(miss_by_var > 0),
+             sum(complete.cases(d)), nrow(d)))
+```
+
+The dataset is **fully complete**: zero missing cells, all
+`r sum(complete.cases(d))` countries usable, no co-missingness pattern to
+diagnose and no imputation or listwise deletion required. This is by
+construction --- the 72 countries are precisely those with a complete record on
+all 41 regressors, so *completeness is baked into how the sample was drawn*
+(the flip side of the selection caveat noted above). Every method below therefore
+sees the identical 72 countries, which makes their out-of-sample comparison a
+clean apples-to-apples race.
+
+## Bivariate relationships with growth
+
+We now line up growth against each of the most salient predictors. First the two
+headline **continuous** determinants, each with an OLS smoother and its raw
+correlation with growth:
+
+```{r eda-bivar, fig.height=3.2, fig.cap="Growth vs the two headline continuous determinants, with least-squares smoother and Pearson r. Left: conditional convergence --- higher initial income is associated with slower subsequent growth. Right: higher equipment investment is associated with faster growth."}
+par(mfrow = c(1, 2), mar = c(4, 4, 2, 1))
+plot(d$GDP60, d$y, pch = 19, col = "steelblue",
+     xlab = "GDP60 (log initial income, 1960)",
+     ylab = "annual growth 1960-1992")
+abline(lm(y ~ GDP60, data = d), col = "firebrick", lwd = 2)
+title(sprintf("Convergence (r = %.2f)", cor(d$GDP60, d$y)),
+      line = 0.6, cex.main = 0.95)
+plot(d$EquipInv, d$y, pch = 19, col = "steelblue",
+     xlab = "EquipInv (equipment investment share)",
+     ylab = "annual growth 1960-1992")
+abline(lm(y ~ EquipInv, data = d), col = "firebrick", lwd = 2)
+title(sprintf("Investment (r = %.2f)", cor(d$EquipInv, d$y)),
+      line = 0.6, cex.main = 0.95)
+```
+
+Then the strongest **categorical** contrast --- the Sub-Saharan growth deficit
+--- as a boxplot with a difference-in-means:
+
+```{r eda-bivar-sub, fig.height=3.0, fig.cap="Growth by region. Sub-Saharan African economies grew markedly slower than the rest of the sample over 1960--1992."}
+boxplot(y ~ SubSahara, data = d, col = c("grey85","firebrick"),
+        names = c("Rest of world", "Sub-Saharan Africa"),
+        ylab = "annual growth 1960-1992", xlab = "")
+gap <- mean(d$y[d$SubSahara == 0]) - mean(d$y[d$SubSahara == 1])
+title(sprintf("Mean gap = %.1f pct pts / yr", 100 * gap),
+      line = 0.5, cex.main = 0.95)
+```
+
+To summarize *every* predictor's marginal association compactly, we rank all 41
+by the absolute correlation of the outcome with the predictor (for the dummies
+this equals a standardized difference in means), and show the strongest links:
+
+```{r eda-marginal}
+cors <- sapply(colnames(d)[-1], function(v) cor(d[[v]], d$y))
+marg <- data.frame(variable = names(cors),
+                   cor_with_y = round(cors, 3),
+                   abs_cor = round(abs(cors), 3),
+                   row.names = NULL)
+marg <- marg[order(-marg$abs_cor), ]
+knitr::kable(head(marg, 12), row.names = FALSE,
+  caption = "Twelve predictors most strongly correlated (in absolute value) with growth. Sign shown; these are the raw marginal associations, before adjusting for the heavy collinearity documented next.")
+```
+
+The leaders --- initial income (negative: convergence), equipment investment,
+life expectancy, primary schooling, the Confucian share and the Sub-Saharan
+dummy --- are exactly the determinants FLS's BMA later ranks at the top. But
+these are *marginal* associations; the next subsection shows why we cannot simply
+read them as effects.
+
+## Multivariate structure and collinearity
+
+With many predictors describing overlapping facets of "development", collinearity
+is the central statistical hazard: if income, health, schooling and investment
+all rise together, no single regression can cleanly attribute growth to one of
+them. A correlation heatmap over the salient continuous predictors makes the
+entanglement visible (a 41x41 heatmap would be an unreadable postage stamp):
+
+```{r eda-corr, fig.height=4.4, fig.cap="Correlation heatmap among the salient continuous predictors. Initial income, life expectancy, schooling and equipment investment form a strongly positively correlated block --- the collinearity that makes single-regression inference unstable and motivates shrinkage/selection."}
+key_num <- c("GDP60","LifeExp","EquipInv","NequipInv","PrScEnroll",
+             "HighEnroll","RuleofLaw","YrsOpen","Age","Abslat")
+C  <- cor(d[ , key_num])
+cm <- as.data.frame(as.table(C)); names(cm) <- c("v1","v2","r")
+ggplot(cm, aes(v1, v2, fill = r)) +
+  geom_tile(colour = "white") +
+  geom_text(aes(label = sprintf("%.2f", r)), size = 2.7) +
+  scale_fill_gradient2(low = "firebrick", mid = "white",
+                       high = "steelblue", midpoint = 0,
+                       limits = c(-1, 1)) +
+  labs(x = NULL, y = NULL, fill = "r") +
+  theme_minimal(base_size = 9) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+To quantify what "strong" means, list every predictor pair (across ALL 41
+continuous+binary regressors) with $|r| > 0.7$:
+
+```{r eda-collinear}
+Cfull <- cor(d[ , -1])
+Cfull[upper.tri(Cfull, diag = TRUE)] <- NA
+hi <- which(abs(Cfull) > 0.7, arr.ind = TRUE)
+if (nrow(hi) == 0) {
+  cat("No predictor pair exceeds |r| = 0.7.\n")
+} else {
+  hipairs <- data.frame(
+    var1 = rownames(Cfull)[hi[, 1]],
+    var2 = colnames(Cfull)[hi[, 2]],
+    r    = round(Cfull[hi], 3))
+  hipairs <- hipairs[order(-abs(hipairs$r)), ]
+  knitr::kable(hipairs, row.names = FALSE,
+    caption = "All predictor pairs with |r| > 0.7 across the full 41-predictor set.")
+}
+```
+
+Life expectancy, initial income, schooling and equipment investment move together
+(pairwise $r$ up to $\approx 0.8$): richer, healthier, better-schooled economies
+cluster. Ordinary least squares cannot cleanly attribute growth to any one of
+them --- precisely the identification problem FLS confront with BMA and we revisit
+with lasso and best-subset. As a final compact view of the joint structure among
+the four headline determinants, a `GGally::ggpairs` panel shows their pairwise
+scatters, marginal densities and correlations together:
+
+```{r eda-ggpairs, fig.height=4.6, fig.cap="Pairwise structure of the four headline determinants (GGally::ggpairs): scatterplots below the diagonal, densities on it, correlations above. The uniformly positive off-diagonal correlations are the collinearity that shrinkage and selection are built to handle."}
+suppressMessages(library(GGally))
+ggpairs(d[ , c("GDP60","LifeExp","PrScEnroll","EquipInv")],
+        lower = list(continuous = wrap("points", alpha = 0.5,
+                                       size = 0.7, colour = "steelblue"))) +
+  theme_minimal(base_size = 8)
+```
+
+**What the descriptives foreshadow.** Growth is a well-behaved, near-symmetric
+continuous outcome with modest spread ($\approx 1.8$ percentage points), no
+missingness, and no transformation needed. Its strongest raw associations are the
+classic convergence signal (negative slope on initial income `GDP60`), a positive
+equipment-investment gradient, and a large Sub-Saharan growth deficit --- exactly
+the determinants FLS's BMA ranks at the top. But those salient predictors are
+themselves tightly intercorrelated (several pairs with $|r|>0.7$), and their
+scales span orders of magnitude. That combination --- 41 correlated predictors on
+wildly different scales over just 72 countries --- is the whole reason the
+reproduction below turns to model averaging, why standardization is mandatory, and
+why the regularization and best-subset extensions earn their keep out-of-sample.
+
+# Reproduction gate 1 --- the data are the published data
+
+FLS print descriptive statistics for every variable. Matching them to printed
+precision proves we hold the exact published dataset.
+
+```{r prov}
+pubstats <- data.frame(
+  var      = c("y","PrScEnroll","LifeExp","GDP60","Muslim","RuleofLaw","EquipInv"),
+  pub_mean = c(0.02073, 0.7953, 56.58, 7.492, 0.1475, 0.5509, 0.04429),
+  pub_std  = c(0.01813, 0.2440, 11.37, 0.8785, 0.2925, 0.3329, 0.03426))
+pubstats$our_mean <- round(sapply(pubstats$var, function(v) mean(d[[v]])), 5)
+# FLS report the population s.d. (divide by n); our sample sd divides by n-1
+pubstats$our_std  <- round(sapply(pubstats$var,
+                       function(v) sd(d[[v]]) * sqrt((n-1)/n)), 4)
+knitr::kable(pubstats, caption = "Data provenance: our data vs FLS (2001) printed descriptive statistics.")
+```
+
+Means and standard deviations match the published figures to printed precision.
+
+# Reproduce the published main result: BMA posterior inclusion probabilities
+
+FLS's Table I ranks the 41 regressors by posterior inclusion probability under
+their **benchmark $g$-prior** ($g = 1/\max(n,k^2) = 1/k^2$ here) and a uniform
+prior over model size. We reproduce it with `BMS::bms()` using an MC$^3$ sampler
+(full enumeration of $2^{41}$ models is infeasible).
+
+```{r bma, cache=TRUE, results='hide'}
+mfls <- bms(d, burn = 1e5, iter = 1e6, g = "BRIC", mprior = "uniform",
+            nmodel = 10000, mcmc = "bd", user.int = FALSE)
+```
+
+```{r bma-corr}
+cat("Sampler convergence (corr of analytic vs MCMC model probs):",
+    round(mfls$info$corr.pmp, 3), "\n")
+pip_bma <- coef(mfls, exact = TRUE)[, "PIP"]   # posterior inclusion probs
+```
+
+The convergence correlation ($\approx 0.99$) confirms the chain has identified
+the high-probability region. Now compare our reproduced PIPs to the numbers
+printed in FLS Table I (p. 9):
+
+```{r bma-match}
+pub <- data.frame(
+  var = c("GDP60","Confucian","LifeExp","EquipInv","SubSahara","Muslim",
+          "RuleofLaw","YrsOpen","EcoOrg","Protestants","NequipInv","Mining"),
+  published_PIP = c(1.000,0.995,0.946,0.942,0.757,0.656,
+                    0.516,0.502,0.471,0.461,0.441,0.431))
+pub$reproduced_PIP <- round(pip_bma[pub$var], 3)
+pub$abs_diff <- round(abs(pub$published_PIP - pub$reproduced_PIP), 3)
+knitr::kable(pub, caption = "Reproduction of FLS (2001) Table I: the 12 highest posterior-inclusion-probability growth determinants. Published vs reproduced.")
+cat("Top-12 mean absolute PIP difference:",
+    round(mean(pub$abs_diff), 4), "\n")
+```
+
+The reproduced posterior inclusion probabilities match the published values to
+within Monte-Carlo error (mean absolute difference $\approx 0.01$). **The gate is
+passed**: the same variables emerge as important, in the same order, with the
+same magnitudes. FLS's substantive story --- initial GDP (conditional
+convergence), equipment investment, life expectancy, a Confucian dummy, and
+Sub-Saharan Africa dominate; most of the other 33 regressors are dispensable ---
+is reproduced.
+
+# The OLS that motivates everything
+
+Before regularizing, look at why you *cannot* just run one big OLS on all 41
+predictors with $n=72$.
+
+```{r ols}
+ols <- lm(y ~ ., data = d)
+s <- summary(ols)
+data.frame(R2 = round(s$r.squared,3), adjR2 = round(s$adj.r.squared,3),
+           residual_df = ols$df.residual, n = n, params = length(coef(ols)))
+```
+
+The full model spends 42 parameters on 72 observations, leaving only 30
+residual degrees of freedom. In-sample $R^2 = 0.96$ looks spectacular --- and is
+almost entirely overfitting, as the out-of-sample comparison below will show.
+This is the canonical setting where **regularization and selection** are not
+optional niceties but the difference between a useful model and a useless one.
+
+# Standardization --- why and how
+
+Penalized methods shrink coefficients toward zero, so the *scale* of each
+predictor matters: a coefficient on `LifeExp` (range roughly 40--75 years) and one
+on a 0/1 religion dummy are penalized on wildly different footings unless we put
+all predictors on a common scale. `glmnet` standardizes internally
+(`standardize = TRUE`) --- fits on $z$-scored predictors, then reports
+coefficients back on the original scale. Here is the effect explicitly:
+
+```{r standardize}
+Xs <- scale(X)   # mean 0, sd 1
+round(rbind(`orig sd` = apply(X, 2, sd)[1:6],
+            `scaled sd` = apply(Xs, 2, sd)[1:6]), 3)
+```
+
+# Ridge, lasso and elastic net via `glmnet`
+
+`glmnet` fits the elastic-net family, minimizing
+$\frac{1}{2n}\lVert y - X\beta\rVert^2 + \lambda\big[\alpha\lVert\beta\rVert_1 +
+\tfrac{1-\alpha}{2}\lVert\beta\rVert_2^2\big]$:
+$\alpha=1$ is **lasso** (sparse; sets coefficients exactly to zero),
+$\alpha=0$ is **ridge** (shrinks but keeps all), and intermediate $\alpha$ is
+**elastic net**.
+
+```{r glmnet-fits}
+library(glmnet)
+fit_ridge <- glmnet(X, y, alpha = 0,   standardize = TRUE)
+fit_lasso <- glmnet(X, y, alpha = 1,   standardize = TRUE)
+fit_enet  <- glmnet(X, y, alpha = 0.5, standardize = TRUE)
+```
+
+## Coefficient paths
+
+As $\lambda$ falls (right to left) predictors enter the model. Lasso admits them
+one at a time and keeps most at exactly zero; ridge moves them all together.
+
+```{r paths, fig.height=3.6, fig.cap="Coefficient paths. Left: lasso ($\\alpha=1$) --- sparse, coefficients enter one at a time. Right: ridge ($\\alpha=0$) --- all coefficients shrink together, none exactly zero."}
+par(mfrow = c(1, 2), mar = c(4, 4, 3, 1))
+plot(fit_lasso, xvar = "lambda"); title("Lasso path", line = 2.2)
+plot(fit_ridge, xvar = "lambda"); title("Ridge path", line = 2.2)
+```
+
+## Cross-validation to choose $\lambda$ (`lambda.min` and `lambda.1se`)
+
+```{r cvlambda, fig.height=3.6, fig.cap="10-fold CV curves. Dotted lines mark lambda.min (loss-minimizing) and lambda.1se (sparsest model within 1 s.e.)."}
+set.seed(1)
+cv_lasso <- cv.glmnet(X, y, alpha = 1,   nfolds = 10, standardize = TRUE)
+cv_ridge <- cv.glmnet(X, y, alpha = 0,   nfolds = 10, standardize = TRUE)
+cv_enet  <- cv.glmnet(X, y, alpha = 0.5, nfolds = 10, standardize = TRUE)
+par(mfrow = c(1, 2), mar = c(4, 4, 3, 1))
+plot(cv_lasso); title("Lasso CV", line = 2.4)
+plot(cv_enet);  title("Elastic-net CV", line = 2.4)
+
+sel <- function(cvfit, s) {
+  b <- coef(cvfit, s = s); nm <- rownames(b)[which(b != 0)]
+  setdiff(nm, "(Intercept)")
+}
+lasso_min <- sel(cv_lasso, "lambda.min")
+lasso_1se <- sel(cv_lasso, "lambda.1se")
+data.frame(rule = c("lambda.min","lambda.1se"),
+           n_kept = c(length(lasso_min), length(lasso_1se)),
+           lambda = signif(c(cv_lasso$lambda.min, cv_lasso$lambda.1se), 3))
+```
+
+Interpreting shrinkage: at `lambda.min` the lasso keeps `r length(lasso_min)`
+predictors, while the more conservative `lambda.1se` rule --- the sparsest model
+whose CV error is within one standard error of the minimum --- keeps only
+`r length(lasso_1se)`:
+
+```{r lasso1se-list}
+lasso_1se
+```
+
+## Feature importance from standardized coefficients
+
+With predictors standardized, the magnitude of each lasso coefficient is directly
+comparable across variables --- an importance ranking. (glmnet reports on the
+original scale, so we multiply by each predictor's s.d. to standardize.)
+
+```{r importance, fig.height=3.8, fig.cap="Standardized lasso (lambda.1se) coefficients: signed importance of the retained growth determinants."}
+sdx  <- apply(X, 2, sd)
+b1se <- as.numeric(coef(cv_lasso, s = "lambda.1se"))[-1]
+imp  <- data.frame(var = colnames(X), std_coef = b1se * sdx)
+imp  <- imp[imp$std_coef != 0, ]
+imp  <- imp[order(imp$std_coef), ]
+par(mar = c(4, 7, 2, 1))
+barplot(imp$std_coef, names.arg = imp$var, horiz = TRUE, las = 1,
+        col = ifelse(imp$std_coef > 0, "steelblue", "firebrick"),
+        xlab = "standardized coefficient (effect on annual growth)")
+abline(v = 0)
+```
+
+# Best-subset selection with `abess`, contrasted with lasso
+
+Lasso selects by convex $\ell_1$ shrinkage; **best-subset** selection instead
+searches directly for the size-$s$ subset of predictors giving the best fit.
+Exact best-subset is NP-hard, but the **abess** algorithm (adaptive best-subset)
+solves it efficiently and picks the support size by an information criterion.
+
+```{r abess}
+library(abess)
+ab      <- abess(X, y, family = "gaussian")   # support size chosen by GIC
+ab_best <- extract(ab)
+abess_support <- ab_best$support.vars
+data.frame(method = "abess (best subset)",
+           support_size = length(abess_support))
+abess_support
+```
+
+**How the three selectors compare.** Lay each method's kept set beside the BMA
+"ground truth" (variables with reproduced PIP $>0.4$):
+
+```{r selection-compare}
+bma_important <- names(sort(pip_bma, decreasing = TRUE))[pip_bma[
+                   order(pip_bma, decreasing = TRUE)] > 0.4]
+allv <- colnames(X)
+tab <- data.frame(
+  variable   = allv,
+  BMA_PIP    = round(pip_bma[allv], 2),
+  BMA_top    = ifelse(allv %in% bma_important, "*", ""),
+  lasso_1se  = ifelse(allv %in% lasso_1se, "*", ""),
+  abess      = ifelse(allv %in% abess_support, "*", ""))
+tab <- tab[order(-tab$BMA_PIP), ]
+knitr::kable(head(tab, 16), row.names = FALSE,
+  caption = "Which predictors each method keeps (top 16 by BMA PIP). A '*' marks inclusion. abess best-subset closely tracks the BMA important set; lasso-1se is sparser and drops some high-PIP variables it cannot separate from correlated rivals.")
+```
+
+The contrast is the lesson: **abess best-subset recovers almost exactly the FLS
+BMA important set** --- initial GDP, Confucian, life expectancy, equipment
+investment, Sub-Saharan Africa, Muslim, rule of law --- whereas **lasso at
+`lambda.1se` is sparser** and, because it shrinks correlated predictors together,
+substitutes some proxies and drops a few high-PIP variables. Neither is "wrong":
+lasso optimizes prediction under shrinkage; best-subset optimizes fit at a fixed
+sparsity; BMA hedges over all models.
+
+# Hyperparameter tuning: $\lambda$ and $\alpha$ together
+
+Elastic net has two knobs. We already tune $\lambda$ by CV; now tune $\alpha$
+over a grid and read off the CV-optimal combination.
+
+```{r tune-alpha, fig.height=3.8, fig.cap="Tuning the elastic-net mixing parameter alpha. Each point is the minimum 10-fold CV MSE at that alpha; lower is better."}
+alphas <- seq(0, 1, by = 0.1)
+set.seed(7)
+foldid <- sample(rep(1:10, length.out = n))    # common folds => fair alpha comparison
+cvm <- sapply(alphas, function(a) {
+  min(cv.glmnet(X, y, alpha = a, foldid = foldid, standardize = TRUE)$cvm)
+})
+best_alpha <- alphas[which.min(cvm)]
+plot(alphas, cvm, type = "b", pch = 19, col = "steelblue",
+     xlab = expression(alpha~"(0 = ridge, 1 = lasso)"),
+     ylab = "min 10-fold CV MSE")
+abline(v = best_alpha, lty = 2)
+cat("CV-optimal alpha:", best_alpha, "\n")
+```
+
+# Out-of-sample comparison: does regularization actually help?
+
+The honest test. We repeat a 70/30 train--test split `r 100` times; on each split
+we fit every method on the training rows (choosing $\lambda$ by inner CV) and
+score RMSE on the held-out rows. We include the full OLS and a mean-only baseline.
+
+```{r oos, cache=TRUE}
+rmse <- function(a, b) sqrt(mean((a - b)^2))
+R <- 100
+methods <- c("OLS (full)","Ridge","Lasso","Elastic net","abess","Mean baseline")
+res <- matrix(NA, R, length(methods), dimnames = list(NULL, methods))
+set.seed(2024)
+for (r in 1:R) {
+  te <- sample(n, size = round(0.30 * n)); tr <- setdiff(1:n, te)
+  Xtr <- X[tr,]; Xte <- X[te,]; ytr <- y[tr]; yte <- y[te]
+  ols_r <- lm(y ~ ., data = data.frame(y = ytr, Xtr))
+  res[r,"OLS (full)"] <- rmse(yte, predict(ols_r, newdata = data.frame(Xte)))
+  for (a in c(0, 1, 0.5)) {
+    cv <- cv.glmnet(Xtr, ytr, alpha = a, nfolds = 5, standardize = TRUE)
+    pr <- as.numeric(predict(cv, newx = Xte, s = "lambda.min"))
+    nm <- c("Ridge","Lasso","Elastic net")[match(a, c(0,1,0.5))]
+    res[r, nm] <- rmse(yte, pr)
+  }
+  ab_r <- abess(Xtr, ytr, family = "gaussian")
+  res[r,"abess"] <- rmse(yte, as.numeric(predict(ab_r, newx = Xte)))
+  res[r,"Mean baseline"] <- rmse(yte, mean(ytr))
+}
+oos <- data.frame(method = methods,
+                  mean_RMSE = round(colMeans(res), 5),
+                  se_RMSE   = round(apply(res, 2, sd) / sqrt(R), 5))
+oos <- oos[order(oos$mean_RMSE), ]
+knitr::kable(oos, row.names = FALSE,
+  caption = "Out-of-sample RMSE over 100 repeated 70/30 splits (smaller is better). y has s.d. 0.018.")
+```
+
+```{r oos-plot, fig.height=3.6, fig.cap="Distribution of held-out RMSE across 100 splits. The full OLS is off the useful scale --- it overfits so badly it loses to predicting the mean."}
+ord <- oos$method
+boxplot(res[, ord], las = 2, col = "grey85", ylab = "held-out RMSE",
+        main = "Out-of-sample prediction error by method")
+abline(h = sd(y), lty = 3)
+```
+
+**Reading the result.** The full OLS is *worse than predicting the training mean*
+--- its in-sample $R^2=0.96$ was a mirage. Lasso and elastic net predict best,
+with ridge and abess close behind; every regularized/selected model beats both
+OLS and the naive baseline. With 41 correlated predictors and 72 countries,
+**shrinkage and selection are what make the growth regression usable
+out-of-sample.**
+
+# Takeaway
+
+Fernández, Ley & Steel (2001) confronted 41 correlated growth determinants and
+72 countries with Bayesian model averaging; we reproduced their headline
+posterior-inclusion ranking to Monte-Carlo precision (initial GDP, equipment
+investment, life expectancy, Confucian share, Sub-Saharan Africa, Muslim, rule of
+law). The modern regularization toolkit tells the same substantive story from a
+predictive angle: the naive full OLS overfits catastrophically (worse than a mean
+baseline out-of-sample), while lasso and elastic net predict best, and
+**best-subset (`abess`) selection independently recovers almost exactly the BMA
+important set**. The teaching point is that lasso's $\ell_1$ shrinkage, best-subset
+search, and Bayesian model averaging are three routes to the same conclusion ---
+that only a handful of these 41 determinants carry robust, transferable
+signal --- and that with $p$ large relative to $n$, choosing among them is not a
+refinement of OLS but a prerequisite for it.

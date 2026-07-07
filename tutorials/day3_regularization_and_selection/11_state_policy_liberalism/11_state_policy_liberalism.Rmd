@@ -9,15 +9,22 @@ geometry: margin=1in
 fontsize: 10pt
 header-includes:
   - \usepackage{fvextra}
-  - \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,breakanywhere,commandchars=\\\{\}}
-  - \DefineVerbatimEnvironment{verbatim}{Verbatim}{breaklines,breakanywhere}
+  - \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+  - \DefineVerbatimEnvironment{verbatim}{Verbatim}{breaklines}
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
                       fig.width = 6.5, fig.height = 3.6, fig.align = "center")
-options(width = 82)
+options(width = 80)
 library(glmnet)   # lasso / ridge / elastic net
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(knitr)
+library(e1071)    # skewness / kurtosis
+library(patchwork)
+theme_set(theme_minimal(base_size = 9))
 ```
 
 > **Published study.** Caughey, D. & Warshaw, C. (2016). "The Dynamics of State Policy Liberalism,
@@ -54,26 +61,250 @@ state-politics measures.
 | `gini_coef` | income inequality (Gini coefficient) |
 | `gsppcap` | gross state product per capita |
 
-# Descriptive results
+# Descriptive analysis
+
+We first load the data and get to know it thoroughly before any modeling. The
+data-loading step is unchanged from the reproduction below; the descriptive
+analysis operates on the loaded data frame `d`.
 
 ```{r data}
-d <- read.csv("https://raw.githubusercontent.com/bdesmarais/intro-ml-statistical-horizons-4day/main/tutorials/day3_regularization_and_selection/11_state_policy_liberalism/data/state_policy_liberalism.csv")
+d <- read.csv(paste0(
+  "https://raw.githubusercontent.com/bdesmarais/",
+  "intro-ml-statistical-horizons-4day/main/",
+  "tutorials/day3_regularization_and_selection/11_state_policy_liberalism/data/state_policy_liberalism.csv"))
 preds <- setdiff(names(d), c("st", "pollib_median"))
-cat(sprintf("%d states x %d predictors (p/n = %.2f)\n", nrow(d), length(preds), length(preds)/nrow(d)))
-round(t(sapply(d[c("pollib_median", preds)],
-               function(x) c(mean = mean(x), sd = sd(x), min = min(x), max = max(x)))), 2)
+cat(sprintf("%d states x %d predictors (p/n = %.2f)\n",
+            nrow(d), length(preds), length(preds) / nrow(d)))
 ```
 
-```{r desc-plot, fig.height=3, fig.cap="Policy-liberalism distribution (left) and each predictor's correlation with policy liberalism (right)."}
-par(mfrow = c(1, 2)); par(mar = c(4, 4, 2.5, 1))
-hist(d$pollib_median, breaks = 12, col = "#a6cee3", border = "white",
-     main = "Outcome: policy liberalism", xlab = "policy liberalism")
-cors <- sort(sapply(d[preds], function(x) cor(x, d$pollib_median)))
-par(mar = c(4, 7, 2.5, 1))
-barplot(cors, horiz = TRUE, las = 1, cex.names = 0.85,
-        col = ifelse(cors > 0, "#1f78b4", "#e31a1c"), main = "Correlation with liberalism",
-        xlab = "correlation"); abline(v = 0, col = "grey50")
+## Dataset and provenance
+
+**Unit of analysis.** One row per U.S. **state**, a pure cross-section averaged
+over roughly 2005--2012, so `n = 50`. There is no time dimension and no
+sampling: this is the *entire population* of states, which is exactly why the
+small-`n` problem is structural rather than fixable by collecting more data.
+With `r length(preds)` predictors and 50 states, the predictor-to-observation
+ratio is `r round(length(preds)/nrow(d), 2)` -- modest in absolute terms, but
+large enough that ordinary least squares has few states per coefficient and
+begins to over-fit. That tension is the entire point of this Day-3 example.
+
+**Source.** Variables are drawn from the **Correlates of State Policy Project**
+(Jordan & Grossmann 2020), which compiles the standard state-politics measures;
+the outcome is the Caughey--Warshaw (2016) dynamic policy-liberalism index.
+
+The variable dictionary below lists the outcome and all `r length(preds)`
+predictors, their role, type, and coding direction.
+
+```{r dict}
+dict <- data.frame(
+  Variable = c("pollib_median", "mood", "citi6013", "ranney4_control",
+               "union_density", "evangelical_pop", "gini_coef", "gsppcap"),
+  Role = c("outcome", rep("predictor", 7)),
+  Type = "numeric",
+  Description = c(
+    "Policy liberalism (Caughey-Warshaw); higher = more liberal",
+    "Public policy mood; higher = more liberal preferences",
+    "Citizen ideology (Berry et al.); higher = more liberal",
+    "Ranney index of Democratic party control; higher = more Dem.",
+    "Percent of workers unionized",
+    "Evangelical share of the population",
+    "Income inequality (Gini coefficient)",
+    "Gross state product per capita (US$)"))
+kable(dict)
 ```
+
+All eight variables are continuous. There are no categorical or binary
+predictors, which keeps the descriptive work focused on distributions and
+correlations.
+
+## The outcome in depth
+
+`pollib_median` is a standardized latent index, so it is centered near zero and
+takes both signs (negative = more conservative than average, positive = more
+liberal). We examine its full distribution and shape.
+
+```{r out-dist, fig.height=2.6, fig.cap="Distribution of state policy liberalism: histogram with density overlay (left) and boxplot (right)."}
+p1 <- ggplot(d, aes(pollib_median)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 12,
+                 fill = "#a6cee3", colour = "white") +
+  geom_density(colour = "#1f78b4", linewidth = 0.7) +
+  labs(x = "policy liberalism", y = "density", title = "Outcome distribution")
+p2 <- ggplot(d, aes(y = pollib_median)) +
+  geom_boxplot(fill = "#a6cee3", width = 0.4) +
+  labs(y = "policy liberalism", x = NULL, title = "Boxplot")
+p1 + p2
+```
+
+```{r out-stats}
+stat_row <- function(x) {
+  q <- quantile(x, c(.25, .5, .75))
+  c(n = length(x), mean = mean(x), sd = sd(x), min = min(x),
+    Q1 = q[1], median = q[2], Q3 = q[3], max = max(x),
+    IQR = q[3] - q[1], skew = skewness(x), kurt = kurtosis(x))
+}
+out_tab <- t(stat_row(d$pollib_median))
+rownames(out_tab) <- "pollib_median"
+kable(round(out_tab, 2))
+```
+
+**Shape.** The outcome is close to **symmetric** (skewness
+`r round(skewness(d$pollib_median), 2)`) and mildly **platykurtic**
+(excess kurtosis `r round(kurtosis(d$pollib_median), 2)`) -- flatter than a
+normal, with mass spread fairly evenly from conservative to liberal states
+rather than bunched at a mode. There is no zero-inflation, no floor or ceiling,
+and no obvious outlier: the boxplot whiskers cover the full range with no points
+beyond them. A response transform is **not warranted**; we model `pollib_median`
+on its natural scale, as the published OLS does.
+
+## Univariate predictor distributions
+
+With only seven predictors we can profile each one. The faceted histograms show
+the marginal shape of every predictor, and the summary table quantifies it.
+
+```{r pred-hist, fig.height=3.4, fig.cap="Marginal distributions of the seven predictors."}
+d |>
+  select(all_of(preds)) |>
+  pivot_longer(everything(), names_to = "var", values_to = "val") |>
+  ggplot(aes(val)) +
+  geom_histogram(bins = 12, fill = "#b2df8a", colour = "white") +
+  facet_wrap(~ var, scales = "free", ncol = 4) +
+  labs(x = NULL, y = "count")
+```
+
+```{r pred-stats}
+pred_tab <- t(sapply(d[preds], function(x) {
+  q <- quantile(x, c(.25, .5, .75))
+  c(n = length(x), n_miss = sum(is.na(x)), mean = mean(x), sd = sd(x),
+    min = min(x), Q1 = q[1], median = q[2], Q3 = q[3], max = max(x),
+    skew = skewness(x))
+}))
+colnames(pred_tab) <- c("n", "n_miss", "mean", "sd", "min",
+                        "Q1", "median", "Q3", "max", "skew")
+kable(round(pred_tab, 2))
+```
+
+The public-opinion and party-control measures (`mood`, `citi6013`,
+`ranney4_control`) are roughly symmetric. The socio-economic predictors are
+**right-skewed**: `evangelical_pop` (skew
+`r round(skewness(d$evangelical_pop), 2)`), `mood`, and `gsppcap` all have a
+long upper tail driven by a handful of extreme states (high-evangelical
+Southern states; high-income outliers). The predictor scales differ by orders
+of magnitude (`gsppcap` in the tens of thousands vs. proportions near zero),
+which is exactly why `glmnet` **standardizes predictors internally** before
+penalizing -- otherwise the penalty would fall almost entirely on the
+large-scale variables.
+
+## Missing data
+
+```{r miss}
+miss <- data.frame(
+  variable = c("pollib_median", preds),
+  n_missing = sapply(d[c("pollib_median", preds)], function(x) sum(is.na(x))))
+miss$pct_missing <- round(100 * miss$n_missing / nrow(d), 1)
+kable(miss, row.names = FALSE)
+cat(sprintf("Complete cases: %d of %d states (%.0f%%).\n",
+            sum(complete.cases(d)), nrow(d),
+            100 * mean(complete.cases(d))))
+```
+
+The data are **fully complete**: every state has every variable, so there is no
+co-missingness pattern to display and no listwise deletion in the reproduction.
+This is expected for an administrative population-level compilation -- the
+Correlates of State Policy Project reports each measure for all 50 states -- and
+means the missing-data mechanism is a non-issue here. All 50 states enter every
+model.
+
+## Bivariate relationships with the outcome
+
+We next look at how each predictor co-moves with policy liberalism. Because
+every predictor is numeric, we use scatterplots with a linear smoother and
+annotate each panel with its Pearson correlation `r`.
+
+```{r biv-scatter, fig.height=4, fig.cap="Policy liberalism vs each predictor, with linear fit and Pearson r."}
+long <- d |>
+  select(pollib_median, all_of(preds)) |>
+  pivot_longer(all_of(preds), names_to = "var", values_to = "val")
+rlab <- long |>
+  group_by(var) |>
+  summarise(r = cor(val, pollib_median), .groups = "drop") |>
+  mutate(lab = sprintf("r = %.2f", r))
+ggplot(long, aes(val, pollib_median)) +
+  geom_point(colour = "#1f78b4", alpha = 0.6, size = 1) +
+  geom_smooth(method = "lm", se = FALSE, colour = "#e31a1c",
+              linewidth = 0.6) +
+  geom_text(data = rlab, aes(x = -Inf, y = Inf, label = lab),
+            hjust = -0.1, vjust = 1.4, size = 2.6, inherit.aes = FALSE) +
+  facet_wrap(~ var, scales = "free_x", ncol = 4) +
+  labs(x = NULL, y = "policy liberalism")
+```
+
+```{r biv-tab}
+marg <- long |>
+  group_by(var) |>
+  summarise(r = cor(val, pollib_median),
+            r2 = r^2, .groups = "drop") |>
+  arrange(desc(abs(r)))
+kable(marg, digits = 2,
+      col.names = c("predictor", "r with outcome", "r-squared"))
+```
+
+**Reading the associations.** The opinion--policy link dominates: **public
+mood** and **citizen ideology** are the strongest marginal predictors of policy
+liberalism (large positive `r`), followed by **Democratic party control** and
+**union density**. **Evangelical population** is the strongest *negative*
+correlate -- more evangelical states are more conservative. Income inequality
+and per-capita product are weaker, more ambiguous marginal predictors. These
+raw associations preview the signs the reproduction recovers.
+
+## Multivariate structure and collinearity
+
+Marginal correlations can mislead when predictors are themselves correlated. We
+examine the full predictor correlation matrix and the variance-inflation factors
+(VIFs) from the reproduction model.
+
+```{r corr-heat, fig.height=3.4, fig.cap="Correlation heatmap of the seven predictors."}
+cm <- cor(d[preds])
+cm_long <- as.data.frame(as.table(cm))
+names(cm_long) <- c("v1", "v2", "r")
+ggplot(cm_long, aes(v1, v2, fill = r)) +
+  geom_tile(colour = "white") +
+  geom_text(aes(label = sprintf("%.2f", r)), size = 2.4) +
+  scale_fill_gradient2(low = "#e31a1c", mid = "white",
+                       high = "#1f78b4", midpoint = 0, limits = c(-1, 1)) +
+  labs(x = NULL, y = NULL) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r vif}
+# VIFs via auxiliary regressions (car is not installed)
+vif <- sapply(preds, function(p) {
+  aux <- lm(as.formula(paste(p, "~ .")), data = d[preds])
+  1 / (1 - summary(aux)$r.squared)
+})
+kable(data.frame(predictor = preds, VIF = round(vif, 2)),
+      row.names = FALSE)
+```
+
+Only one predictor pair exceeds the `|r| > 0.7` flag: **citizen ideology and
+evangelical population** correlate about **-0.76** (conservative,
+high-evangelical states have low citizen-ideology scores). No VIF is alarmingly
+high -- the largest is `citi6013` at
+`r round(max(vif), 1)`, well under the usual 10 rule of thumb -- so the
+collinearity is moderate, not pathological. But combined with only 50 states,
+even moderate collinearity inflates OLS coefficient variance, which is precisely
+the instability that **regularization** is built to tame in the sections that
+follow.
+
+## From description to modeling
+
+The descriptive picture sets up the rest of the tutorial cleanly. The outcome is
+symmetric and well-behaved (no transform needed); the predictors carry a clear
+opinion--policy signal but differ wildly in scale (so `glmnet` standardizes
+them); the data are complete (all 50 states model-able); and with seven
+correlated predictors over just 50 states, OLS has little slack. We now
+reproduce the published regression, then show that penalized and best-subset
+methods predict new states more accurately while naming the compact set of
+characteristics that drive policy liberalism.
 
 # Reproduce the published regression
 

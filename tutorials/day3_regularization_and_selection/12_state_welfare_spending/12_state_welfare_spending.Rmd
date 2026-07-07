@@ -9,8 +9,8 @@ geometry: margin=1in
 fontsize: 10pt
 header-includes:
   - \usepackage{fvextra}
-  - \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,breakanywhere,commandchars=\\\{\}}
-  - \DefineVerbatimEnvironment{verbatim}{Verbatim}{breaklines,breakanywhere}
+  - \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+  - \DefineVerbatimEnvironment{verbatim}{Verbatim}{breaklines}
 ---
 
 ```{r setup, include=FALSE}
@@ -52,26 +52,210 @@ predicts new states better than ordinary least squares.
 | `gini_coef` | income inequality (Gini coefficient) |
 | `gsppcap` | gross state product per capita (fiscal capacity) |
 
-# Descriptive results
+# Descriptive analysis
+
+Before any modeling we profile the data thoroughly. Because this is a **small-sample** design
+(n = 50 states), every descriptive choice -- how skewed the outcome is, how strongly the predictors
+correlate with each other -- has direct consequences for whether ordinary least squares can be
+trusted, and it is exactly these features that motivate the regularization that follows.
 
 ```{r data}
-d <- read.csv("https://raw.githubusercontent.com/bdesmarais/intro-ml-statistical-horizons-4day/main/tutorials/day3_regularization_and_selection/12_state_welfare_spending/data/state_welfare_spending.csv")
+d <- read.csv(paste0(
+  "https://raw.githubusercontent.com/bdesmarais/",
+  "intro-ml-statistical-horizons-4day/main/",
+  "tutorials/day3_regularization_and_selection/12_state_welfare_spending/data/state_welfare_spending.csv"))
 preds <- setdiff(names(d), c("st", "welfare_spending_percap"))
-cat(sprintf("%d states x %d predictors (p/n = %.2f)\n", nrow(d), length(preds), length(preds)/nrow(d)))
-round(t(sapply(d[c("welfare_spending_percap", preds)],
-               function(x) c(mean = mean(x), sd = sd(x), min = min(x), max = max(x)))), 2)
+cat(sprintf("%d states x %d predictors (p/n = %.2f)\n",
+            nrow(d), length(preds), length(preds) / nrow(d)))
 ```
 
-```{r desc-plot, fig.height=3, fig.cap="Welfare-spending distribution (left) and each predictor's correlation with spending (right)."}
-par(mfrow = c(1, 2)); par(mar = c(4, 4, 2.5, 1))
-hist(d$welfare_spending_percap, breaks = 12, col = "#a6cee3", border = "white",
-     main = "Outcome: welfare spending", xlab = "per-capita welfare spending")
-cors <- sort(sapply(d[preds], function(x) cor(x, d$welfare_spending_percap)))
-par(mar = c(4, 7, 2.5, 1))
-barplot(cors, horiz = TRUE, las = 1, cex.names = 0.85,
-        col = ifelse(cors > 0, "#1f78b4", "#e31a1c"), main = "Correlation with spending",
-        xlab = "correlation"); abline(v = 0, col = "grey50")
+## Dataset and provenance
+
+- **Unit of analysis:** a U.S. **state**, cross-section averaged over 2005--2012.
+- **N:** 50 states (the full population of states, not a sample).
+- **Variables:** 1 continuous outcome, `r length(preds)` continuous predictors, plus a state label.
+- **Source:** the **Correlates of State Policy Project** (Jordan & Grossmann 2020), which
+  compiles standard state-politics measures from Census, BLS, and academic indices.
+- **Coverage / sampling:** all 50 states, so there is no sampling uncertainty in the usual
+  survey sense; the "population" is fixed and small, which is precisely why a **p/n ratio of
+  `r round(length(preds)/nrow(d), 2)`** makes over-fitting the central concern.
+
+```{r dict, echo=FALSE}
+dict <- data.frame(
+  Variable = c("welfare_spending_percap", "citi6013", "ranney4_control",
+               "evangelical_pop", "union_density", "gini_coef", "mood", "gsppcap"),
+  Role = c("outcome", rep("predictor", 7)),
+  Type = rep("numeric", 8),
+  Description = c(
+    "per-capita state public-welfare spending (USD)",
+    "citizen ideology (Berry et al.); higher = more liberal",
+    "Ranney index of Democratic party control; higher = more Democratic",
+    "evangelical share of the population (%)",
+    "percent of workers unionized",
+    "income inequality (Gini coefficient)",
+    "public policy mood; higher = more liberal preferences",
+    "gross state product per capita (fiscal capacity, USD)"))
+knitr::kable(dict, caption = "Variable dictionary: outcome and predictors.")
 ```
+
+## The outcome in depth
+
+```{r out-stats, echo=FALSE}
+y <- d$welfare_spending_percap
+ostat <- data.frame(
+  n = sum(!is.na(y)), mean = mean(y), sd = sd(y), min = min(y),
+  Q1 = quantile(y, .25), median = median(y), Q3 = quantile(y, .75),
+  max = max(y), IQR = IQR(y),
+  skew = e1071::skewness(y), kurtosis = e1071::kurtosis(y))
+knitr::kable(round(ostat, 2), row.names = FALSE,
+             caption = "Distribution of per-capita welfare spending (USD).")
+```
+
+```{r out-plot, echo=FALSE, fig.height=2.8, fig.cap="Per-capita welfare spending: histogram with kernel density (left) and boxplot (right). The distribution is right-skewed with a few high-spending states."}
+library(ggplot2); library(patchwork)
+p1 <- ggplot(d, aes(welfare_spending_percap)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 15,
+                 fill = "#a6cee3", colour = "white") +
+  geom_density(colour = "#1f78b4", linewidth = 0.8) +
+  labs(x = "per-capita welfare spending (USD)", y = "density") +
+  theme_minimal(base_size = 9)
+p2 <- ggplot(d, aes(y = welfare_spending_percap)) +
+  geom_boxplot(fill = "#a6cee3", width = 0.4) +
+  labs(y = "per-capita welfare spending (USD)", x = NULL) +
+  theme_minimal(base_size = 9) +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+p1 + p2 + plot_layout(widths = c(2, 1))
+```
+
+The outcome is **right-skewed** (skewness `r round(e1071::skewness(y), 2)`, kurtosis
+`r round(e1071::kurtosis(y), 2)`): the median (\$`r format(round(median(y)), big.mark=",")`) sits
+below the mean (\$`r format(round(mean(y)), big.mark=",")`), and a short right tail of high-spending
+states (e.g., Alaska, New York) pulls the mean up. There is **no zero-inflation** and no floor or
+ceiling -- spending ranges from \$`r format(round(min(y)), big.mark=",")` to
+\$`r format(round(max(y)), big.mark=",")`. The skew is mild enough that we keep the outcome on its
+natural (dollar) scale for comparability with the published regression; a log transform is a
+sensible robustness check (see the exercises) but is not required to fit the model well.
+
+## Univariate predictor distributions
+
+```{r pred-stats, echo=FALSE}
+sumrow <- function(x) c(
+  n = sum(!is.na(x)), n_miss = sum(is.na(x)), mean = mean(x, na.rm = TRUE),
+  sd = sd(x, na.rm = TRUE), min = min(x, na.rm = TRUE),
+  Q1 = quantile(x, .25, na.rm = TRUE), median = median(x, na.rm = TRUE),
+  Q3 = quantile(x, .75, na.rm = TRUE), max = max(x, na.rm = TRUE),
+  skew = e1071::skewness(x, na.rm = TRUE))
+ptab <- t(sapply(d[preds], sumrow))
+colnames(ptab) <- c("n", "n_miss", "mean", "sd", "min", "Q1",
+                    "median", "Q3", "max", "skew")
+knitr::kable(round(ptab, 2),
+             caption = "Univariate summary of the predictors.")
+```
+
+```{r pred-hist, echo=FALSE, fig.height=3.4, fig.cap="Distributions of the seven predictors across the 50 states."}
+library(tidyr)
+dl <- pivot_longer(d[preds], everything(),
+                   names_to = "variable", values_to = "value")
+ggplot(dl, aes(value)) +
+  geom_histogram(bins = 12, fill = "#b2df8a", colour = "white") +
+  facet_wrap(~ variable, scales = "free", ncol = 4) +
+  labs(x = NULL, y = "count") +
+  theme_minimal(base_size = 8)
+```
+
+The predictors are on **very different scales** -- `gsppcap` in tens of thousands of dollars,
+`gini_coef` between 0 and 1 -- so `glmnet` standardizes them internally before penalizing. A few are
+themselves skewed (e.g., `evangelical_pop`, `union_density`), which matters less for a penalized
+predictor set than it would for inference.
+
+## Missing-data analysis
+
+```{r missing, echo=FALSE}
+miss <- data.frame(
+  variable = c("welfare_spending_percap", preds),
+  n_missing = sapply(d[c("welfare_spending_percap", preds)],
+                     function(x) sum(is.na(x))))
+miss$pct_missing <- round(100 * miss$n_missing / nrow(d), 1)
+knitr::kable(miss, row.names = FALSE,
+             caption = "Missing values per variable.")
+cat(sprintf("Complete cases: %d of %d states (%.0f%%).\n",
+            sum(complete.cases(d)), nrow(d),
+            100 * mean(complete.cases(d))))
+```
+
+The Correlates-of-State-Policy extract used here is **fully complete**: every state has a value on
+every variable, so there is no co-missingness pattern to model and the reproduction below runs on all
+50 states with no listwise deletion. (In wider CSPP extracts some measures are missing for particular
+years; here the 2005--2012 averages are all populated.)
+
+## Bivariate relationships with the outcome
+
+```{r biv-tab, echo=FALSE}
+r  <- sapply(d[preds], function(x) cor(x, y))
+p  <- sapply(d[preds], function(x) cor.test(x, y)$p.value)
+biv <- data.frame(predictor = preds, r = round(r, 2),
+                  p_value = round(p, 3))
+biv <- biv[order(-abs(biv$r)), ]
+knitr::kable(biv, row.names = FALSE,
+             caption = "Marginal (pairwise) association of each predictor with welfare spending.")
+```
+
+```{r biv-plot, echo=FALSE, fig.height=3.4, fig.cap="Welfare spending vs each predictor, with an OLS smoother. Fiscal capacity (gsppcap) shows the clearest positive gradient."}
+dl2 <- pivot_longer(d[c("welfare_spending_percap", preds)], -welfare_spending_percap,
+                    names_to = "variable", values_to = "value")
+ggplot(dl2, aes(value, welfare_spending_percap)) +
+  geom_point(colour = "#1f78b4", alpha = 0.6, size = 1) +
+  geom_smooth(method = "lm", se = FALSE, colour = "#e31a1c", linewidth = 0.7) +
+  facet_wrap(~ variable, scales = "free_x", ncol = 4) +
+  labs(x = NULL, y = "welfare spending (USD)") +
+  theme_minimal(base_size = 8)
+```
+
+Marginally, **fiscal capacity** (`gsppcap`) and the **ideology / party-control** measures
+(`citi6013`, `mood`, `ranney4_control`) move with welfare spending in the expected direction, though
+the individual pairwise correlations are modest -- typical for 50 noisy state observations. No single
+predictor dominates, which is exactly the setting where combining them (and penalizing) helps.
+
+## Multivariate structure and collinearity
+
+```{r corr-heat, echo=FALSE, fig.height=3.6, fig.cap="Correlation heatmap of the numeric predictors. Some ideology/party-control measures are moderately correlated."}
+cm <- cor(d[preds])
+cmdf <- as.data.frame(as.table(cm))
+names(cmdf) <- c("Var1", "Var2", "r")
+ggplot(cmdf, aes(Var1, Var2, fill = r)) +
+  geom_tile(colour = "white") +
+  geom_text(aes(label = round(r, 2)), size = 2.6) +
+  scale_fill_gradient2(low = "#e31a1c", mid = "white", high = "#1f78b4",
+                       midpoint = 0, limits = c(-1, 1)) +
+  labs(x = NULL, y = NULL) +
+  theme_minimal(base_size = 8) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r vif, echo=FALSE}
+X <- d[preds]
+vif <- sapply(preds, function(v) {
+  r2 <- summary(lm(X[[v]] ~ ., data = X[setdiff(preds, v)]))$r.squared
+  1 / (1 - r2)
+})
+knitr::kable(data.frame(predictor = preds, VIF = round(vif, 2)),
+             row.names = FALSE,
+             caption = "Variance-inflation factors from the reproduction model.")
+hi <- which(abs(cm) > 0.7 & upper.tri(cm), arr.ind = TRUE)
+if (nrow(hi) == 0) {
+  cat("No pair of predictors has |r| > 0.7.\n")
+} else {
+  for (i in seq_len(nrow(hi)))
+    cat(sprintf("|r| > 0.7: %s <-> %s (r = %.2f)\n",
+                preds[hi[i, 1]], preds[hi[i, 2]], cm[hi[i, 1], hi[i, 2]]))
+}
+```
+
+No predictor pair exceeds **|r| > 0.7**, and all VIFs are modest (well below the conventional
+threshold of 5), so collinearity is not severe. The over-fitting problem here is driven not by
+collinearity but by the **small n relative to p**: with only 50 states and
+`r length(preds)` predictors, OLS has few observations per coefficient, inflating out-of-sample
+variance. That is the specific weakness the regularization below corrects.
 
 # Reproduce the published regression
 

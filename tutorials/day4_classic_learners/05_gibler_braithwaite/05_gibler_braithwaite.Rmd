@@ -9,18 +9,24 @@ geometry: margin=1in
 fontsize: 10pt
 header-includes:
   - \usepackage{fvextra}
-  - \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,breakanywhere,commandchars=\\\{\}}
-  - \DefineVerbatimEnvironment{verbatim}{Verbatim}{breaklines,breakanywhere}
+  - \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+  - \DefineVerbatimEnvironment{verbatim}{Verbatim}{breaklines}
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
                       fig.width = 6.5, fig.height = 3.6, fig.align = "center")
-options(width = 82)
+options(width = 80)
 library(glmnet)   # elastic net / lasso / ridge
 library(ranger)   # random forests
 library(xgboost)  # gradient boosting
 library(PRROC)    # precision-recall / ROC curves
+library(ggplot2)  # EDA plots
+library(dplyr)    # EDA wrangling
+library(tidyr)    # reshaping for plots
+library(knitr)    # summary tables
+library(e1071)    # skewness / kurtosis
+library(patchwork)# compose EDA panels
 ```
 
 > **Published study.** Gibler, D. M. & Braithwaite, A., "Hostile Contiguous States" (Harvard Dataverse
@@ -48,33 +54,229 @@ Gibler and Braithwaite ask why a small fraction of **militarized interstate disp
 | `spline1`-`spline3` | cubic-spline bases for peace-years (temporal dependence) |
 | `interaction4`, `pnbdem_low` | constructed interaction terms from the published specification |
 
-# Descriptive results
+# Descriptive analysis
 
 ```{r data}
-d <- read.csv("https://raw.githubusercontent.com/bdesmarais/intro-ml-statistical-horizons-4day/main/tutorials/day4_classic_learners/05_gibler_braithwaite/data/gb20.csv")
+d <- read.csv(paste0(
+  "https://raw.githubusercontent.com/bdesmarais/",
+  "intro-ml-statistical-horizons-4day/main/",
+  "tutorials/day4_classic_learners/05_gibler_braithwaite/data/gb20.csv"))
 preds <- setdiff(names(d), "fatal")
 preds <- preds[sapply(d[preds], function(x) length(unique(x)) > 1)]
-
-round(t(sapply(d[c("fatal", preds)],
-               function(x) c(mean = mean(x), sd = sd(x), min = min(x), max = max(x)))), 2)
+clean <- function(v) gsub("[._]+", " ", v)   # tidy names for plots
 ```
 
-```{r desc-plot, fig.height=3, fig.cap="Rare fatal-dispute outcome (left) and the predictors that differ most between fatal and non-fatal disputes (right)."}
-clean <- function(v) gsub("[._]+", " ", v)
+## Dataset and provenance
 
-par(mfrow = c(1, 2))
-par(mar = c(4, 4, 2.5, 1))
-barplot(table(d$fatal), names.arg = c("non-fatal", "fatal"),
-        col = c("grey75", "#1f78b4"), main = "Outcome: fatal", ylab = "count")
+**Unit of analysis.** One row is a **militarized interstate dispute-dyad** — a
+pair of states involved in a militarized dispute. The data ship with the
+published replication package (Gibler & Braithwaite, Harvard Dataverse
+doi:10.7910/DVN/HQLOOJ) and describe the cross-national universe of interstate
+disputes rather than a sample, so there is no sampling frame to correct for.
 
-smd <- sapply(d[preds], function(x) (mean(x[d$fatal == 1]) - mean(x[d$fatal == 0])) / sd(x))
-smd <- tail(smd[order(abs(smd))], 8)
-par(mar = c(4, 7, 2.5, 1))
-barplot(smd, horiz = TRUE, las = 1, names.arg = clean(names(smd)), cex.names = 0.8,
-        col = ifelse(smd > 0, "#1f78b4", "#e31a1c"), main = "Fatal vs non-fatal",
-        xlab = "std. mean difference")
-abline(v = 0, col = "grey50")
+```{r provenance}
+c(rows = nrow(d), columns = ncol(d),
+  n_predictors = length(preds), n_fatal = sum(d$fatal),
+  complete_rows = sum(complete.cases(d)))
 ```
+
+The frame has `r nrow(d)` disputes and `r ncol(d)` columns — a **binary
+outcome** (`fatal`) and `r length(preds)` numeric predictors. Only two
+predictors are indicator (0/1) variables (`contig`, `defense`); the rest are
+counts or continuous ratios. A variable dictionary:
+
+| Variable | Role | Type | Coding / description |
+|---|---|---|---|
+| `fatal` | outcome | binary | 1 if the dispute produced >= 1 battle death |
+| `contig` | predictor | binary | 1 if the two states are geographically contiguous |
+| `terr500k10yr` | predictor | count | intensity of territorial stakes in the dispute |
+| `defense` | predictor | binary | 1 if the dyad shares a defensive alliance |
+| `caprat` | predictor | ratio | national-capability ratio (CINC), 0-1 |
+| `lowdem` | predictor | integer | weaker state's Polity democracy score (-10..10) |
+| `pnbdem_low` | predictor | continuous | democracy-based interaction term |
+| `interaction4` | predictor | integer | constructed interaction from the published model |
+| `peaceyears` | predictor | count | years since the dyad's previous dispute |
+| `spline1`-`spline3` | predictor | continuous | cubic-spline bases of `peaceyears` |
+
+## The outcome in depth
+
+`fatal` is a **rare binary event**. The class-balance table and the base rate
+below are the single most important facts for how we evaluate models.
+
+```{r outcome-stats}
+base_rate <- mean(d$fatal)
+data.frame(non_fatal = sum(d$fatal == 0), fatal = sum(d$fatal == 1),
+           base_rate = round(base_rate, 4),
+           imbalance_ratio = round(sum(d$fatal == 0) / sum(d$fatal == 1), 1))
+```
+
+```{r outcome-bar, fig.height=2.6, fig.cap="Class balance of the fatal-dispute outcome. Fatal disputes are the rare positive class (1.3%)."}
+ggplot(d, aes(factor(fatal, labels = c("non-fatal", "fatal")))) +
+  geom_bar(aes(fill = factor(fatal)), width = 0.6, show.legend = FALSE) +
+  geom_text(stat = "count", aes(label = after_stat(count)), vjust = -0.3) +
+  scale_fill_manual(values = c("grey70", "#1f78b4")) +
+  labs(x = NULL, y = "count",
+       title = sprintf("Outcome base rate = %.1f%% fatal", 100 * base_rate)) +
+  theme_minimal(base_size = 10)
+```
+
+Only **`r sum(d$fatal)` of `r nrow(d)`** disputes (**`r sprintf("%.1f%%",
+100*base_rate)`**) are fatal — an imbalance of about **76:1**. There is no
+distribution shape to transform here; the modeling concern is the *rarity*
+itself. With a base rate this low, a model that predicts "never fatal" is
+`r sprintf("%.1f%%", 100*(1-base_rate))` accurate yet useless, so plain accuracy
+is meaningless. We therefore score every model by **AUC-PR** (area under the
+precision-recall curve), whose no-skill baseline is the base rate
+(`r round(base_rate,3)`) and which rewards finding the rare fatal cases.
+
+## Univariate predictor distributions
+
+All predictors are numeric, so we summarise them in one table (n, missing,
+moments, quartiles, skew) and then show the faceted distributions. Because the
+spline bases span hundreds of thousands, we round to keep the table inside the
+margin.
+
+```{r pred-summary}
+psum <- t(sapply(d[preds], function(x) c(
+  n = length(x), n_miss = sum(is.na(x)),
+  mean = mean(x), sd = sd(x), min = min(x),
+  Q1 = quantile(x, .25), median = median(x),
+  Q3 = quantile(x, .75), max = max(x), skew = skewness(x))))
+kable_ok <- psum
+kable_ok[, 3:9] <- signif(kable_ok[, 3:9], 3)
+kable_ok[, "skew"] <- round(kable_ok[, "skew"], 2)
+kable(kable_ok, caption = "Univariate summary of the predictors.")
+```
+
+```{r pred-hists, fig.height=4.2, fig.cap="Distributions of the eight substantive predictors (spline bases omitted; they are deterministic transforms of peaceyears). Most are right-skewed with heavy zero mass."}
+show <- setdiff(preds, c("spline1", "spline2", "spline3"))
+d %>% select(all_of(show)) %>%
+  pivot_longer(everything(), names_to = "var", values_to = "value") %>%
+  mutate(var = clean(var)) %>%
+  ggplot(aes(value)) +
+  geom_histogram(bins = 30, fill = "#1f78b4", colour = "white", linewidth = 0.1) +
+  facet_wrap(~ var, scales = "free", ncol = 4) +
+  labs(x = NULL, y = "count") +
+  theme_minimal(base_size = 9)
+```
+
+The two indicators are heavily lopsided — only **`r round(100*mean(d$contig))`%**
+of dyads are contiguous and **`r round(100*mean(d$defense))`%** share a defensive
+alliance. `terr500k10yr`, `interaction4` and `peaceyears` have large spikes at
+zero and long right tails (skew 2-3). The spline bases are extreme,
+near-collinear transforms of `peaceyears` (see the collinearity subsection),
+which is why they are excluded from the panels above.
+
+## Missing-data analysis
+
+```{r missing}
+miss <- data.frame(
+  variable = names(d),
+  n_missing = colSums(is.na(d)),
+  pct_missing = round(100 * colMeans(is.na(d)), 2),
+  row.names = NULL)
+miss[order(-miss$n_missing), ]
+```
+
+The replication file is **fully complete** — zero missing cells in any of the
+`r ncol(d)` columns, so **all `r nrow(d)`** disputes are complete cases. This is
+expected: the predictors are constructed from coded dyadic attributes
+(contiguity, alliances, capability ratios) that are defined for every dispute.
+The reproduction therefore needs no imputation or listwise deletion, and no
+missingness mechanism has to be assumed.
+
+## Bivariate relationships with the outcome
+
+For the two indicators we compare fatal rates across groups; for the numeric
+predictors we report the point-biserial correlation with `fatal` and the
+standardized mean difference (SMD) between fatal and non-fatal disputes.
+
+```{r bivar-binary}
+rate_by <- function(g) c(rate0 = mean(d$fatal[g == 0]),
+                         rate1 = mean(d$fatal[g == 1]))
+biv_bin <- rbind(
+  contiguous = rate_by(d$contig),
+  defensive_alliance = rate_by(d$defense),
+  territorial = c(mean(d$fatal[d$terr500k10yr == 0]),
+                  mean(d$fatal[d$terr500k10yr > 0])))
+biv_bin <- cbind(round(biv_bin, 4),
+                 rel_risk = round(biv_bin[, 2] / biv_bin[, 1], 1))
+kable(biv_bin, col.names = c("rate if 0/none", "rate if 1/any", "relative risk"),
+      caption = "Fatal rate split by the key categorical / stakes predictors.")
+```
+
+```{r bivar-numeric}
+biv_num <- data.frame(
+  r_with_fatal = sapply(d[preds], function(x) cor(x, d$fatal)),
+  std_mean_diff = sapply(d[preds],
+    function(x) (mean(x[d$fatal == 1]) - mean(x[d$fatal == 0])) / sd(x)))
+biv_num <- round(biv_num[order(-abs(biv_num$std_mean_diff)), ], 3)
+kable(biv_num, caption = "Marginal association of each predictor with fatality, ranked by |SMD|.")
+```
+
+```{r bivar-plot, fig.height=3, fig.cap="Contiguity is decisive: 26% of contiguous-state disputes are fatal versus 0.4% otherwise (left). Fatal disputes have systematically shorter peace-years (right)."}
+p1 <- d %>% group_by(contig) %>% summarise(rate = mean(fatal)) %>%
+  ggplot(aes(factor(contig, labels = c("non-contig", "contiguous")), rate)) +
+  geom_col(fill = "#1f78b4", width = 0.6) +
+  geom_text(aes(label = sprintf("%.1f%%", 100 * rate)), vjust = -0.3) +
+  labs(x = NULL, y = "P(fatal)", title = "Fatal rate by contiguity") +
+  theme_minimal(base_size = 9)
+p2 <- d %>% mutate(fatal = factor(fatal, labels = c("non-fatal", "fatal"))) %>%
+  ggplot(aes(fatal, peaceyears, fill = fatal)) +
+  geom_boxplot(show.legend = FALSE, outlier.size = 0.4) +
+  scale_fill_manual(values = c("grey70", "#1f78b4")) +
+  labs(x = NULL, y = "peace-years", title = "Peace-years by outcome") +
+  theme_minimal(base_size = 9)
+p1 + p2
+```
+
+**Contiguity dominates every other signal.** A dispute between neighbouring
+states is fatal **`r round(mean(d$fatal[d$contig==1])/mean(d$fatal[d$contig==0]))`
+times** as often (26.1% vs 0.35%), and `contig` is by far the strongest marginal
+association (r = 0.43, SMD = 3.8). Territorial disputes roughly triple the fatal
+rate, and defensive alliances roughly double it. Fatal disputes also have
+**shorter peace-years** (negative SMD): recent conflict predicts renewed lethal
+escalation. These marginals already sketch the escalation logic the learners
+formalise.
+
+## Multivariate structure and collinearity
+
+```{r corr-heat, fig.height=4, fig.cap="Correlation heatmap of the numeric predictors. The three spline bases are near-perfectly collinear with peaceyears and with one another."}
+cm <- cor(d[preds])
+cm[lower.tri(cm)] <- NA
+as.data.frame(cm) %>% mutate(v1 = rownames(cm)) %>%
+  pivot_longer(-v1, names_to = "v2", values_to = "r") %>%
+  filter(!is.na(r)) %>%
+  mutate(v1 = clean(v1), v2 = clean(v2)) %>%
+  ggplot(aes(v2, v1, fill = r)) +
+  geom_tile(colour = "white") +
+  geom_text(aes(label = sprintf("%.2f", r)), size = 2.3) +
+  scale_fill_gradient2(low = "#e31a1c", mid = "white", high = "#1f78b4",
+                       midpoint = 0, limits = c(-1, 1)) +
+  labs(x = NULL, y = NULL) +
+  theme_minimal(base_size = 8) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r vif}
+vif <- sapply(preds, function(p) {
+  r2 <- summary(lm(reformulate(setdiff(preds, p), p), data = d))$r.squared
+  1 / (1 - r2)
+})
+round(sort(vif, decreasing = TRUE), 1)
+```
+
+The heatmap and the VIFs tell the same story: the **three cubic-spline bases are
+near-perfectly collinear** — pairwise |r| > 0.99 among themselves and
+0.94-0.96 with `peaceyears`, giving **astronomical VIFs** (tens of thousands to
+hundreds of thousands). They are, by construction, deterministic transforms of
+`peaceyears` meant to let a *linear* logit bend the peace-years effect. Beyond
+that block, the substantive predictors are close to orthogonal (all |r| well
+below 0.7, VIFs ~1-2). This matters for the modeling that follows: the logit
+must carry the redundant spline block to approximate the nonlinear peace-years
+decay, whereas the **tree-based learners model that curvature directly from
+`peaceyears` alone** and are unbothered by the collinear splines — a concrete
+reason to expect them to win on held-out AUC-PR.
 
 # Reproduce the published regression
 

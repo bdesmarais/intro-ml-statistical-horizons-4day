@@ -1,0 +1,881 @@
+---
+title: "Kim (2023), *Personal Networks, State Financial Backing and Foreign Direct Investment* — SH Day 2: Regression Extensions"
+author: "Machine-Learning Workshop teaching example"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    number_sections: true
+    toc: false
+header-includes:
+  - \setlength{\emergencystretch}{3em}
+  - \usepackage{fvextra}
+  - \AtBeginDocument{\DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}}
+  - \AtBeginDocument{\DefineVerbatimEnvironment{verbatim}{Verbatim}{breaklines}}
+  - \fvset{breaklines=true}
+  - \usepackage{booktabs}
+  - \usepackage{float}
+---
+
+```{r setup, include=FALSE}
+options(width = 80)
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE,
+                      fig.pos = "H", fig.align = "center")
+set.seed(20240706)
+suppressMessages({
+  library(haven); library(dplyr); library(ggplot2)
+  library(splines); library(mgcv); library(pROC); library(knitr)
+  library(tidyr); library(GGally); library(patchwork); library(e1071)
+})
+```
+
+# Study and source
+
+**Citation.** Seungjun Kim. "Personal Networks, State Financial Backing and Foreign
+Direct Investment." *Comparative Political Studies* 56(7), 2023.
+
+**Replication source.** Harvard Dataverse (Comparative Political Studies collection),
+DOI `10.7910/DVN/GFNDOS`
+(<https://doi.org/10.7910/DVN/GFNDOS>). The dataset is a cross-section of South Korean
+listed firms; the posted replication `.R` script estimates the main results with plain
+`lm()` OLS.
+
+**Main model.** Table 1 of the paper reports OLS regressions explaining the *amount of a
+firm's outbound FDI projects* (logged). The theoretical claim: firms whose boards have
+ties to state-owned banks obtain financial backing that translates into more foreign
+investment. The fully-specified column (Table 1, model 4) is:
+
+$$\begin{aligned}
+\texttt{FDIProjects\_Amount} \sim{} & \texttt{Board\_Ties\_to\_State\_Banks} + \texttt{Firm\_Size} + \texttt{Debt\_Ratio} \\
+& + \texttt{Profitability} + \texttt{Chaebol} + \texttt{factor(sic\_category)}.
+\end{aligned}$$
+
+Outcome: continuous (logged FDI project amount). Model type: **OLS**. Estimation N = 703
+(after listwise deletion), across nine one-digit SIC industry categories.
+
+**What this Day-2 tutorial does.** We keep the exact reproduction of Table 1, then treat
+the *same outcome* with the full toolkit of regression extensions: multiple-regression
+interpretation, the complete residual-diagnostic suite, a logistic-regression / MLE aside,
+and a sequence of increasingly flexible mean functions in one key predictor
+(polynomial $\to$ spline $\to$ GAM), all compared honestly out of sample. This study is an
+ideal vehicle because firm size has a strongly **nonlinear** relationship to FDI that a
+straight-line OLS term cannot capture.
+
+```{r load}
+# Data ships next to this Rmd (original Stata .dta pulled from Dataverse file id 6563740).
+.f <- tempfile(fileext=".dta"); download.file(paste0(
+  "https://raw.githubusercontent.com/bdesmarais/",
+  "intro-ml-statistical-horizons-4day/main/",
+  "tutorials/day2_regression_extensions/kim_fdi_networks/data/kim_fdi_data.dta"), .f, mode="wb", quiet=TRUE)
+d <- read_dta(.f)
+
+# Variable renames exactly as in the posted replication script.
+d <- d %>% rename(
+  FDIProjects_Amount        = lpostamountuntil2016,
+  Board_Ties_to_State_Banks = fincondum,
+  Firm_Size                 = wsmarketcap11,
+  Debt_Ratio                = debtratio2011,
+  Profitability             = roe2011,
+  Chaebol                   = chaebol
+)
+
+# Common modeling frame used throughout: same predictors as Table 1 model 4, listwise complete.
+vars <- c("FDIProjects_Amount", "Board_Ties_to_State_Banks", "Firm_Size",
+          "Debt_Ratio", "Profitability", "Chaebol", "sic_category")
+md <- d[, vars]
+md$sic_category <- factor(md$sic_category)
+md <- md[complete.cases(md), ]
+```
+
+# Descriptive analysis
+
+A thorough exploratory pass earns its keep here: the outcome's extreme shape and the
+firm-size predictor's curvature are exactly what motivate every extension on Day 2, so we
+want to *see* them before we model them. We proceed in six movements — (1) the dataset and
+a variable dictionary; (2) the outcome in depth; (3) univariate predictor distributions;
+(4) missing-data analysis; (5) bivariate relationships with the outcome; and (6)
+multivariate structure and collinearity — closing with a narrative of what the descriptives
+imply for the modeling.
+
+## Dataset, provenance, and variable dictionary
+
+**Unit of analysis.** The row is a **South Korean publicly-listed firm**. The design is a
+single 2011 cross-section: the predictors are measured at (or as of) 2011, and the outcome
+accumulates each firm's outbound foreign-direct-investment activity through 2016. There is
+no panel/time dimension — every firm contributes one observation.
+
+**Provenance and sampling.** Firms are the KOSPI/KOSDAQ-listed universe used in Kim (2023),
+assembled from Worldscope financials, board-membership records used to code personal ties
+to state-owned banks, and FDI project filings aggregated to 2016. The replication file is
+the posted Stata `.dta` from Harvard Dataverse (DOI `10.7910/DVN/GFNDOS`); the authors' own
+`.R` script fits the main table with plain `lm()`. There is no probability sampling — this
+is a near-census of listed firms — so the relevant inferential frame is the population of
+listed Korean firms, not a random draw from a larger pool.
+
+**Size and shape.** The raw file holds $`r nrow(d)`$ firms and $`r ncol(d)`$ columns; the
+modeling frame `md` (the six Table-1 predictors plus the outcome, listwise complete) has
+$N = `r nrow(md)`$ firms and $`r ncol(md)`$ columns. Listwise deletion drops
+$`r nrow(d) - nrow(md)`$ firms (Section on missingness below). The dictionary lists the
+outcome and the six modeling predictors.
+
+```{r eda-dict, results='asis'}
+dict <- data.frame(
+  Variable = c("FDIProjects\\_Amount", "Board\\_Ties\\_to\\_State\\_Banks",
+               "Firm\\_Size", "Debt\\_Ratio", "Profitability", "Chaebol",
+               "sic\\_category"),
+  Role = c("Outcome", "Treatment", "Predictor", "Control", "Control",
+           "Control", "Control"),
+  Type = c("continuous", "binary", "continuous", "continuous", "continuous",
+           "binary", "factor (9)"),
+  Description = c(
+    "Logged cumulative outbound FDI project amount, 2016",
+    "1 if a board member is tied to a state-owned bank",
+    "Scaled 2011 market capitalisation (firm size)",
+    "2011 debt-to-assets ratio",
+    "2011 return on equity (ROE, percent)",
+    "1 if firm belongs to a chaebol conglomerate",
+    "One-digit SIC industry code"),
+  check.names = FALSE, row.names = NULL)
+kable(dict, booktabs = TRUE,
+      caption = "Variable dictionary for the outcome and Table-1 modeling predictors.")
+```
+
+## The outcome in depth
+
+The outcome is **logged outbound FDI project amount**. It is continuous in principle but
+massively **zero-inflated**: `r sprintf("%.0f%%", 100*mean(md$FDIProjects_Amount==0))` of
+firms have exactly zero (they never invested abroad), so the distribution is a spike at
+zero next to a right-skewed continuum of positive values that runs out to about
+`r round(max(md$FDIProjects_Amount),1)`. The left panel below shows the full distribution
+(histogram with a density overlay); the right panel shows only the positive mass, which is
+itself right-skewed.
+
+```{r eda-outcome-fig, fig.width=7, fig.height=3, fig.cap="Left: the full outcome, dominated by a spike at zero (81% of firms never invest abroad). Right: conditional on investing at all, the positive amounts are right-skewed. Together these motivate the non-Gaussian residual diagnostics later."}
+p_all <- ggplot(md, aes(FDIProjects_Amount)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 40,
+                 fill = "grey35", colour = "white") +
+  geom_density(colour = "grey10", linewidth = 0.7) +
+  labs(x = "Outbound FDI amount (logged)", y = "Density",
+       title = "All firms") +
+  theme_minimal(base_size = 10)
+p_pos <- ggplot(subset(md, FDIProjects_Amount > 0), aes(FDIProjects_Amount)) +
+  geom_histogram(bins = 30, fill = "grey35", colour = "white") +
+  labs(x = "Outbound FDI amount (logged)", y = "Firms",
+       title = "Investing firms only") +
+  theme_minimal(base_size = 10)
+p_all + p_pos
+```
+
+```{r eda-outcome-tab, results='asis'}
+os <- md$FDIProjects_Amount
+qs <- quantile(os, c(.25, .5, .75))
+out_tab <- data.frame(
+  Statistic = c("N", "Mean", "SD", "Min", "Q1", "Median", "Q3", "Max",
+                "IQR", "Skewness", "Kurtosis (excess)",
+                "% exactly zero", "Mean | positive"),
+  Value = c(length(os), round(mean(os), 3), round(sd(os), 3), round(min(os), 3),
+            round(qs[1], 3), round(qs[2], 3), round(qs[3], 3), round(max(os), 3),
+            round(IQR(os), 3), round(e1071::skewness(os), 3),
+            round(e1071::kurtosis(os), 3),
+            sprintf("%.1f%%", 100*mean(os == 0)),
+            round(mean(os[os > 0]), 3)),
+  check.names = FALSE)
+kable(out_tab, booktabs = TRUE,
+      caption = "Distribution of the continuous outcome (logged outbound FDI amount).")
+```
+
+**Shape, skew, and transformation.** The outcome is strongly right-skewed
+(skewness $`r round(e1071::skewness(os),2)`$) and leptokurtic
+(excess kurtosis $`r round(e1071::kurtosis(os),2)`$), driven by the enormous floor at zero:
+the median, Q1, and Q3 are *all* zero, so more than three-quarters of firms sit exactly at
+the boundary. This is a **floor/zero-inflation** problem, not ordinary skew — the outcome
+is already a log of the raw amount, so a further monotone transform would not remove the
+spike (you cannot spread out a point mass at zero). A principled treatment would be a hurdle
+or Tobit model; the paper stays with OLS, and the price is paid in the residual diagnostics.
+For evaluation purposes the practical implication is that a naive mean-only predictor is
+hard to beat on RMSE, because the majority class is a single value.
+
+## Univariate distributions of the predictors
+
+The study has one continuous headline confound (**firm size**), two continuous financial
+controls (**debt ratio**, **profitability**), two binary indicators (**board ties to
+state banks** — the treatment — and **chaebol** status), and a nine-level industry factor
+(**SIC category**). We profile the numeric predictors first (table + faceted histograms),
+then the categorical/binary ones as frequency tables and bars.
+
+```{r eda-numeric, results='asis'}
+num_vars <- c("Firm_Size", "Debt_Ratio", "Profitability")
+num_lab  <- c("Firm size (scaled mkt cap)", "Debt ratio", "Profitability (ROE)")
+num_summ <- do.call(rbind, lapply(seq_along(num_vars), function(i) {
+  x  <- d[[num_vars[i]]]
+  qq <- quantile(x, c(.25, .5, .75), na.rm = TRUE)
+  data.frame(
+    Predictor  = num_lab[i],
+    n          = sum(!is.na(x)),
+    `n missing` = sum(is.na(x)),
+    Mean   = round(mean(x, na.rm = TRUE), 2),
+    SD     = round(sd(x, na.rm = TRUE), 2),
+    Min    = round(min(x, na.rm = TRUE), 2),
+    Q1     = round(qq[1], 2),
+    Median = round(qq[2], 2),
+    Q3     = round(qq[3], 2),
+    Max    = round(max(x, na.rm = TRUE), 2),
+    Skew   = round(e1071::skewness(x, na.rm = TRUE), 2),
+    check.names = FALSE, row.names = NULL)
+}))
+kable(num_summ, booktabs = TRUE,
+      caption = "Numeric predictors (raw data, before listwise deletion).")
+```
+
+The three numeric predictors are on wildly different scales and shapes, so the faceted
+histograms below use free x-axes. Firm size is extraordinarily right-skewed (a few giant
+firms dwarf the rest); debt ratio is a bounded proportion; and ROE has a small number of
+extreme outliers in both tails that stretch the axis.
+
+```{r eda-numeric-hist, fig.width=7, fig.height=2.6, fig.cap="Univariate distributions of the three numeric predictors (free x-axes). Firm size is severely right-skewed; debt ratio is a bounded proportion; profitability (ROE) carries extreme two-tailed outliers."}
+num_long <- md %>%
+  select(all_of(num_vars)) %>%
+  pivot_longer(everything(), names_to = "var", values_to = "value") %>%
+  mutate(var = factor(var, levels = num_vars, labels = num_lab))
+ggplot(num_long, aes(value)) +
+  geom_histogram(bins = 30, fill = "grey40", colour = "white") +
+  facet_wrap(~ var, scales = "free", nrow = 1) +
+  labs(x = NULL, y = "Firms") +
+  theme_minimal(base_size = 9)
+```
+
+```{r eda-binary, results='asis'}
+bt <- table(md$Board_Ties_to_State_Banks)
+ch <- table(md$Chaebol)
+bin_tab <- data.frame(
+  `Binary predictor` = c("Board ties to state banks", "Chaebol (large conglomerate)"),
+  `= 0 (count)` = c(bt["0"], ch["0"]),
+  `= 1 (count)` = c(bt["1"], ch["1"]),
+  `Proportion = 1` = round(c(mean(md$Board_Ties_to_State_Banks), mean(md$Chaebol)), 3),
+  check.names = FALSE, row.names = NULL)
+kable(bin_tab, booktabs = TRUE,
+      caption = "Binary predictors in the modeling frame (proportion equal to 1).")
+```
+
+Both binary predictors are **imbalanced**: only about
+`r sprintf("%.0f%%", 100*mean(md$Board_Ties_to_State_Banks))` of firms have board ties to
+state banks, and roughly
+`r sprintf("%.0f%%", 100*mean(md$Chaebol))` are chaebol-affiliated. The industry factor
+spreads firms across nine one-digit SIC categories, one of which dominates.
+
+```{r eda-cat-bars, fig.width=7, fig.height=2.6, fig.cap="Frequency of the categorical predictors: the two binary indicators (left, both minority-1) and the nine-level SIC industry factor (right, one category dominant)."}
+bin_df <- data.frame(
+  var = rep(c("Board ties", "Chaebol"), each = 2),
+  level = rep(c("0", "1"), 2),
+  n = c(bt["0"], bt["1"], ch["0"], ch["1"]))
+p_bin <- ggplot(bin_df, aes(level, n, fill = var)) +
+  geom_col(position = "dodge") +
+  scale_fill_grey(start = 0.4, end = 0.7) +
+  labs(x = NULL, y = "Firms", fill = NULL, title = "Binary predictors") +
+  theme_minimal(base_size = 9) + theme(legend.position = "top")
+sic_df <- as.data.frame(table(md$sic_category))
+names(sic_df) <- c("sic", "n")
+p_sic <- ggplot(sic_df, aes(sic, n)) +
+  geom_col(fill = "grey40") +
+  labs(x = "One-digit SIC", y = "Firms", title = "Industry") +
+  theme_minimal(base_size = 9)
+p_bin + p_sic
+```
+
+```{r eda-sic, results='asis'}
+sic_tab <- as.data.frame(table(md$sic_category))
+names(sic_tab) <- c("SIC category (one digit)", "Firms")
+sic_tab$`Share` <- sprintf("%.1f%%", 100 * sic_tab$Firms / sum(sic_tab$Firms))
+kable(sic_tab, booktabs = TRUE,
+      caption = "Industry composition: nine one-digit SIC categories.")
+```
+
+## Missing-data analysis
+
+Listwise deletion removes `r nrow(d) - nrow(md)` of the `r nrow(d)` raw firms
+(`r sprintf("%.1f%%", 100*(nrow(d)-nrow(md))/nrow(d))`). The table below counts and
+percentages missing values per model variable in the raw data.
+
+```{r eda-missing, results='asis'}
+miss <- sapply(d[, vars], function(x) sum(is.na(x)))
+miss_tab <- data.frame(
+  Variable = c("Outbound FDI amount", "Board ties to state banks", "Firm size",
+               "Debt ratio", "Profitability", "Chaebol", "SIC category"),
+  `# missing` = as.integer(miss),
+  `% missing` = sprintf("%.1f%%", 100 * as.integer(miss) / nrow(d)),
+  check.names = FALSE, row.names = NULL)
+miss_tab <- miss_tab[order(-miss_tab$`# missing`), ]
+kable(miss_tab, booktabs = TRUE, row.names = FALSE,
+      caption = sprintf("Missingness per model variable (of %d raw firms).", nrow(d)))
+```
+
+```{r eda-missing-pattern, results='asis'}
+# How many firms are complete, and how the incomplete ones co-miss.
+incomplete <- d[!complete.cases(d[, vars]), vars]
+n_complete <- sum(complete.cases(d[, vars]))
+co <- sapply(vars, function(v) sum(is.na(incomplete[[v]])))
+co <- co[co > 0]
+pat_tab <- data.frame(
+  Quantity = c("Complete cases (all 7 vars present)",
+               "Incomplete firms (>= 1 var missing)",
+               paste0("  ... missing ", names(co))),
+  Firms = c(n_complete, nrow(incomplete), as.integer(co)),
+  check.names = FALSE, row.names = NULL)
+kable(pat_tab, booktabs = TRUE,
+      caption = "Missingness pattern: complete vs. incomplete firms and which variables drive the loss.")
+```
+
+The loss is concentrated in a couple of variables rather than scattered evenly, and no
+single firm is missing many fields at once — the incomplete rows are mostly missing a single
+value. There is no obvious sign that missingness is tied to the outcome (the outcome itself
+is essentially complete), so listwise deletion of ~`r sprintf("%.0f%%", 100*(nrow(d)-nrow(md))/nrow(d))`
+of firms is unlikely to bias the headline estimates much; the reproduction handles it by
+the same `complete.cases()` listwise deletion the authors used.
+
+## Bivariate relationships with the outcome
+
+We now relate the outcome to each key predictor. For the numeric predictors we scatter FDI
+against the predictor with a LOESS smoother and report the Pearson correlation; for the
+categorical/binary predictors we compare group means. Firm size is the dominant continuous
+driver and the treatment (board ties) is the substantive quantity of interest, so those two
+get the most attention.
+
+```{r eda-bivar-num, fig.width=7, fig.height=2.6, fig.cap="Outbound FDI vs. each numeric predictor with a LOESS smoother (firm size on a 1-99 percentile window). Firm size rises steeply and then bends; debt ratio and profitability are essentially flat against the outcome."}
+mk <- function(xv, xlab, clip = FALSE) {
+  p <- ggplot(md, aes(.data[[xv]], FDIProjects_Amount)) +
+    geom_point(colour = "grey70", size = 0.6, alpha = 0.5) +
+    geom_smooth(method = "loess", se = FALSE, colour = "grey20",
+                linewidth = 0.8) +
+    labs(x = xlab, y = "FDI (logged)") +
+    theme_minimal(base_size = 9)
+  if (clip) p <- p +
+    coord_cartesian(xlim = quantile(md[[xv]], c(.01, .99)))
+  p
+}
+(mk("Firm_Size", "Firm size", clip = TRUE) |
+   mk("Debt_Ratio", "Debt ratio") |
+   mk("Profitability", "Profitability"))
+```
+
+```{r eda-bivar-ties, fig.width=5, fig.height=2.8, fig.cap="FDI amount by board-tie status; tied firms sit higher on average, the paper's headline raw association."}
+md$ties_lab <- factor(md$Board_Ties_to_State_Banks, levels = c(0, 1),
+                      labels = c("No ties", "Board ties"))
+ggplot(md, aes(ties_lab, FDIProjects_Amount)) +
+  geom_boxplot(fill = "grey80", outlier.size = 0.6) +
+  labs(x = NULL, y = "FDI amount (logged)") +
+  theme_minimal(base_size = 10)
+```
+
+```{r eda-bivar-tab, results='asis'}
+# Correlation of the outcome with each numeric predictor.
+num_assoc <- data.frame(
+  Predictor = c("Firm size", "Debt ratio", "Profitability"),
+  Type = "numeric",
+  `Assoc. with FDI` = sprintf(
+    "r = %.3f",
+    c(cor(md$FDIProjects_Amount, md$Firm_Size),
+      cor(md$FDIProjects_Amount, md$Debt_Ratio),
+      cor(md$FDIProjects_Amount, md$Profitability))),
+  check.names = FALSE)
+# Group-mean difference for the binary/categorical predictors.
+d_ties <- mean(md$FDIProjects_Amount[md$Board_Ties_to_State_Banks == 1]) -
+          mean(md$FDIProjects_Amount[md$Board_Ties_to_State_Banks == 0])
+d_chae <- mean(md$FDIProjects_Amount[md$Chaebol == 1]) -
+          mean(md$FDIProjects_Amount[md$Chaebol == 0])
+eta_sic <- summary(lm(FDIProjects_Amount ~ sic_category, md))$r.squared
+cat_assoc <- data.frame(
+  Predictor = c("Board ties", "Chaebol", "SIC industry"),
+  Type = c("binary", "binary", "factor(9)"),
+  `Assoc. with FDI` = c(
+    sprintf("mean diff = %.3f", d_ties),
+    sprintf("mean diff = %.3f", d_chae),
+    sprintf("eta^2 = %.3f", eta_sic)),
+  check.names = FALSE)
+kable(rbind(num_assoc, cat_assoc), booktabs = TRUE, row.names = FALSE,
+      caption = "Marginal association of each predictor with the outcome (correlation for numeric, group-mean gap / eta-squared for categorical).")
+```
+
+```{r eda-ties-means, results='asis'}
+gm <- md %>% group_by(`Board ties` = ties_lab) %>%
+  summarise(`Firms` = n(),
+            `Mean FDI` = round(mean(FDIProjects_Amount), 3),
+            `% investing abroad` = sprintf("%.0f%%",
+                                           100*mean(FDIProjects_Amount > 0)),
+            .groups = "drop")
+kable(gm, booktabs = TRUE,
+      caption = "Outcome by board-tie status: tied firms invest abroad more often and by more.")
+```
+
+Firm size carries essentially all of the marginal signal
+(`r sprintf("r = %.2f", cor(md$FDIProjects_Amount, md$Firm_Size))` with the outcome), and
+the scatter *curves* rather than rising in a straight line. Board ties show a clear positive
+raw gap, but as the next subsection shows, tied firms also tend to be larger — a confound we
+expect the regression to partial out.
+
+## Multivariate structure and collinearity
+
+Finally we look at the joint structure among the numeric variables — a correlation heatmap,
+a compact pairs panel, and the variance-inflation factors from the reproduction model — to
+check whether any predictors are dangerously collinear.
+
+```{r eda-corr-heat, fig.width=5, fig.height=4, fig.cap="Correlation heatmap among the numeric variables (outcome + three continuous predictors). The only strong cell is firm size with the FDI outcome; the continuous controls are near-orthogonal to one another."}
+cor_vars <- c("FDIProjects_Amount", "Firm_Size", "Debt_Ratio", "Profitability")
+cor_lab  <- c("FDI amount", "Firm size", "Debt ratio", "Profitability")
+cm <- cor(md[, cor_vars])
+dimnames(cm) <- list(cor_lab, cor_lab)
+cm_long <- as.data.frame(as.table(cm))
+names(cm_long) <- c("x", "y", "r")
+ggplot(cm_long, aes(x, y, fill = r)) +
+  geom_tile(colour = "white") +
+  geom_text(aes(label = sprintf("%.2f", r)), size = 3) +
+  scale_fill_gradient2(low = "grey20", mid = "white", high = "grey20",
+                       midpoint = 0, limits = c(-1, 1)) +
+  labs(x = NULL, y = NULL, fill = "r") +
+  theme_minimal(base_size = 9) +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+```
+
+```{r eda-corr-tab, results='asis'}
+kable(round(cm, 3), booktabs = TRUE,
+      caption = "Pearson correlations among the numeric variables (outcome + continuous predictors).")
+```
+
+```{r eda-vif, results='asis'}
+# VIFs from the reproduction specification (model 4 predictors).
+m_vif <- lm(FDIProjects_Amount ~ Board_Ties_to_State_Banks + Firm_Size +
+              Debt_Ratio + Profitability + Chaebol + factor(sic_category),
+            data = md)
+X <- model.matrix(m_vif)[, -1]
+vif <- sapply(seq_len(ncol(X)), function(j) {
+  1 / (1 - summary(lm(X[, j] ~ X[, -j]))$r.squared)
+})
+names(vif) <- colnames(X)
+keep_vif <- c("Board_Ties_to_State_Banks", "Firm_Size", "Debt_Ratio",
+              "Profitability", "Chaebol")
+vif_tab <- data.frame(
+  Term = c("Board ties to state banks", "Firm size", "Debt ratio",
+           "Profitability", "Chaebol"),
+  VIF = round(vif[keep_vif], 2),
+  check.names = FALSE, row.names = NULL)
+kable(vif_tab, booktabs = TRUE,
+      caption = "Variance-inflation factors from the reproduction model (SIC dummies excluded from display). All near 1 -- no collinearity concern.")
+```
+
+The heatmap has a single strong cell (firm size with the FDI outcome,
+`r sprintf("r = %.2f", cm["Firm size","FDI amount"])`); every predictor-with-predictor
+correlation is small. The VIFs are all close to 1 — far below any rule-of-thumb threshold
+(5 or 10) — so there is **no collinearity** worth worrying about (no $|r| > 0.7$ anywhere).
+That is good news for interpretation: each slope in the reproduction is cleanly identified,
+and the modeling can focus on *functional form* rather than variance inflation.
+
+**What the descriptives foreshadow.** The outcome is dominated by a spike at zero and a
+skewed positive tail, which is exactly why the OLS residual diagnostics later look
+non-Gaussian and heteroscedastic. Among the predictors, only firm size is strongly
+correlated with FDI, and that relationship visibly *curves* — motivating the polynomial,
+spline, and GAM extensions that are the heart of this Day-2 tutorial. Board ties, the
+treatment, show a clear positive raw association with FDI, but tied firms are also larger,
+so we should expect firm size to absorb part of that association once both enter the
+regression together. Collinearity is not a worry (VIFs $\approx 1$), so the modeling can
+focus squarely on functional form rather than variance inflation.
+
+# Reproduction of the published regression
+
+We re-estimate Table 1, models 1–4, on the downloaded data. The values labelled
+"Published" are the numbers produced by the authors' own replication script (which by
+construction equal the printed table); "Reproduced" are our re-run of the identical
+`lm()` specification. They match to reported precision.
+
+```{r reproduce, results='asis'}
+m1 <- lm(FDIProjects_Amount ~ Board_Ties_to_State_Banks + factor(sic_category), data = d)
+m2 <- lm(FDIProjects_Amount ~ Firm_Size + factor(sic_category), data = d)
+m3 <- lm(FDIProjects_Amount ~ Board_Ties_to_State_Banks + Firm_Size + factor(sic_category), data = d)
+m4 <- lm(FDIProjects_Amount ~ Board_Ties_to_State_Banks + Firm_Size + Debt_Ratio +
+           Profitability + Chaebol + factor(sic_category), data = d)
+
+gc <- function(m, term) unname(round(coef(summary(m))[term, "Estimate"], 3))
+
+# Published reference values (authors' replication-script output for Table 1, model 4).
+pub <- c(Board_Ties_to_State_Banks = 0.548, Firm_Size = 1.363,
+         Debt_Ratio = 0.542, Profitability = 0.002, Chaebol = 1.023)
+
+match_tab <- data.frame(
+  Term = c("Board ties to state banks", "Firm size", "Debt ratio",
+           "Profitability", "Chaebol (large conglomerate)"),
+  `Published (m4)`   = as.numeric(pub),
+  `Reproduced (m4)`  = c(gc(m4,"Board_Ties_to_State_Banks"), gc(m4,"Firm_Size"),
+                         gc(m4,"Debt_Ratio"), gc(m4,"Profitability"), gc(m4,"Chaebol")),
+  check.names = FALSE
+)
+kable(match_tab, caption = "Table 1, model 4: published vs. reproduced OLS coefficients.",
+      booktabs = TRUE)
+```
+
+```{r reproduce-across, results='asis'}
+across <- data.frame(
+  Model = c("m1: ties only", "m2: size only", "m3: ties + size", "m4: full"),
+  `Board ties` = c(gc(m1,"Board_Ties_to_State_Banks"), NA,
+                   gc(m3,"Board_Ties_to_State_Banks"), gc(m4,"Board_Ties_to_State_Banks")),
+  `Firm size`  = c(NA, gc(m2,"Firm_Size"), gc(m3,"Firm_Size"), gc(m4,"Firm_Size")),
+  `N`   = c(length(m1$residuals), length(m2$residuals),
+            length(m3$residuals), length(m4$residuals)),
+  `R2`  = round(c(summary(m1)$r.squared, summary(m2)$r.squared,
+                  summary(m3)$r.squared, summary(m4)$r.squared), 3),
+  check.names = FALSE
+)
+kable(across, caption = "Reproduced Table 1 across specifications (key terms).",
+      booktabs = TRUE)
+```
+
+The board-ties coefficient is positive and significant throughout ($\hat\beta = 0.548$,
+$p = 0.017$ in the full model), and firm size is the dominant predictor
+($\hat\beta = 1.36$). **The reproduction is exact.** Everything below extends this same
+model without disturbing it.
+
+# OLS setup and multiple-regression interpretation
+
+The reproduced model 4 is an ordinary least squares fit
+$y_i = \beta_0 + \sum_j \beta_j x_{ij} + \varepsilon_i$, where $\hat\beta$ minimizes the
+residual sum of squares $\sum_i (y_i - \hat y_i)^2$ and, under the classical assumptions,
+is BLUE. In a *multiple* regression each slope is a **partial** effect: the expected change
+in the (logged) FDI amount for a one-unit change in that predictor, *holding all the others
+fixed*. The coefficient table below reads off model 4 with this interpretation in mind.
+
+```{r coef-tab, results='asis'}
+sm <- coef(summary(m4))
+keep <- c("Board_Ties_to_State_Banks","Firm_Size","Debt_Ratio","Profitability","Chaebol")
+ct <- data.frame(
+  Term = c("Board ties to state banks", "Firm size", "Debt ratio",
+           "Profitability", "Chaebol"),
+  Estimate = round(sm[keep,"Estimate"], 3),
+  `Std. error` = round(sm[keep,"Std. Error"], 3),
+  `t value` = round(sm[keep,"t value"], 2),
+  `p value` = round(sm[keep,"Pr(>|t|)"], 3),
+  check.names = FALSE, row.names = NULL
+)
+kable(ct, booktabs = TRUE,
+      caption = "Model 4 OLS coefficients (SIC dummies estimated but omitted from display).")
+```
+
+* **Board ties to state banks** ($+0.548$): a firm whose board is tied to a state bank has,
+  on average, a logged FDI amount 0.55 higher than an otherwise-identical firm without such
+  ties — the paper's headline result.
+* **Firm size** ($+1.363$): the dominant term. Each one-unit increase in the (scaled)
+  market-cap measure is associated with a 1.36 rise in logged FDI, controlling for the rest.
+  We will show below this straight-line slope hides a strong curvature.
+* The remaining controls (debt ratio, profitability, chaebol status, and nine SIC-industry
+  dummies) are partialled out of every coefficient above.
+
+Overall the model explains $R^2 = `r round(summary(m4)$r.squared,3)`$ of in-sample variance
+(adjusted $R^2 = `r round(summary(m4)$adj.r.squared,3)`$), on N $= `r length(m4$residuals)`$.
+
+# Residual diagnostics
+
+The four standard `plot.lm` diagnostics probe the OLS assumptions. The figure below shows
+all four for model 4.
+
+```{r diag, fig.width=7, fig.height=6, fig.cap="Residual diagnostics for the reproduced OLS model 4: (top-left) residuals vs fitted for linearity/mean-zero errors; (top-right) normal QQ for the normality of errors; (bottom-left) scale-location for homoscedasticity; (bottom-right) residuals vs leverage with Cook's-distance contours for influential points."}
+op <- par(mfrow = c(2, 2), mar = c(4, 4, 2.5, 1))
+plot(m4, which = 1:4)
+par(op)
+```
+
+Reading the panels:
+
+* **Residuals vs fitted** — the smoother is not flat and the point cloud fans out with the
+  fitted value: the conditional mean is *not* well captured by the linear terms, and the
+  spread grows. Both are symptoms of the outcome's heavy zero-mass and skew.
+* **Normal QQ** — the upper tail departs sharply from the reference line; errors are far
+  from Gaussian (again the FDI distribution: 81% of firms have exactly zero).
+* **Scale-location** — the rising $\sqrt{|\text{std. resid}|}$ trend confirms
+  **heteroscedasticity**, so classical OLS standard errors are suspect.
+* **Residuals vs leverage / Cook's distance** — a handful of high-leverage, high-residual
+  firms sit near or beyond the Cook's-distance contours; the most influential observations
+  are flagged below.
+
+```{r influence, results='asis'}
+ck <- cooks.distance(m4)
+thr <- 4 / length(ck)
+infl <- head(order(ck, decreasing = TRUE), 5)
+inf_tab <- data.frame(
+  `Row` = infl,
+  `Cook's D` = round(ck[infl], 3),
+  `Leverage` = round(hatvalues(m4)[infl], 3),
+  `Std. resid` = round(rstandard(m4)[infl], 2),
+  check.names = FALSE, row.names = NULL
+)
+kable(inf_tab, booktabs = TRUE,
+      caption = sprintf("Five most influential firms by Cook's distance (rule-of-thumb cutoff 4/n = %.4f).", thr))
+```
+
+Because heteroscedasticity is evident, the table below contrasts the classical and
+heteroscedasticity-consistent (HC3, White) standard errors for the two headline terms. The
+point estimates are unchanged (they must be — same OLS fit), but honest inference should use
+the robust column.
+
+```{r robust, results='asis'}
+suppressMessages({library(sandwich); library(lmtest)})
+rob <- coeftest(m4, vcov. = vcovHC(m4, type = "HC3"))
+cl  <- coeftest(m4)
+hc <- data.frame(
+  Term = c("Board ties to state banks", "Firm size"),
+  Estimate = round(cl[c("Board_Ties_to_State_Banks","Firm_Size"),"Estimate"], 3),
+  `Classical SE` = round(cl[c("Board_Ties_to_State_Banks","Firm_Size"),"Std. Error"], 3),
+  `Robust SE (HC3)` = round(rob[c("Board_Ties_to_State_Banks","Firm_Size"),"Std. Error"], 3),
+  check.names = FALSE, row.names = NULL
+)
+kable(hc, booktabs = TRUE,
+      caption = "Classical vs. heteroscedasticity-consistent (HC3) standard errors.")
+```
+
+# Logistic regression and MLE (pedagogical aside)
+
+*The published model is a continuous OLS; this section is a clearly-labeled **pedagogical
+aside** to illustrate logistic regression and maximum likelihood — it is not part of the
+paper's design.* We binarize the outcome into **any outbound FDI** — since 81% of firms
+have exactly zero FDI, `FDI > 0` is the natural cut (a "did the firm invest abroad at all?"
+event, 19% positive) — and fit a logistic GLM with the same predictors.
+
+Where OLS minimizes squared error, logistic regression maximizes the **Bernoulli
+log-likelihood**
+$\ell(\beta)=\sum_i\{y_i\log p_i + (1-y_i)\log(1-p_i)\}$ with
+$p_i=\mathrm{logit}^{-1}(x_i'\beta)$. Coefficients are **log-odds**: $\hat\beta_j$ is the
+change in the log-odds of any-FDI per unit of $x_j$; $e^{\hat\beta_j}$ is the odds ratio.
+The model is fit by IRLS; the printed **deviance** is $-2\ell$ at the solution, and the
+difference between null and residual deviance is the likelihood-ratio evidence that the
+predictors matter.
+
+```{r logit, results='asis'}
+md$any_fdi <- as.integer(md$FDIProjects_Amount > 0)
+glm1 <- glm(any_fdi ~ Board_Ties_to_State_Banks + Firm_Size + Debt_Ratio +
+              Profitability + Chaebol + factor(sic_category),
+            data = md, family = binomial)
+
+sg <- coef(summary(glm1))
+keepg <- c("Board_Ties_to_State_Banks","Firm_Size","Debt_Ratio","Profitability","Chaebol")
+lg <- data.frame(
+  Term = c("Board ties to state banks", "Firm size", "Debt ratio",
+           "Profitability", "Chaebol"),
+  `Log-odds (beta)` = round(sg[keepg,"Estimate"], 3),
+  `Odds ratio` = round(exp(sg[keepg,"Estimate"]), 3),
+  `Std. error` = round(sg[keepg,"Std. Error"], 3),
+  `p value` = round(sg[keepg,"Pr(>|z|)"], 3),
+  check.names = FALSE, row.names = NULL
+)
+kable(lg, booktabs = TRUE,
+      caption = "Logistic regression for Pr(any outbound FDI). Coefficients are log-odds; the odds-ratio column exponentiates them.")
+```
+
+```{r logit-fit, results='asis'}
+ll   <- as.numeric(logLik(glm1))
+lr   <- glm1$null.deviance - glm1$deviance
+lrdf <- glm1$df.null - glm1$df.residual
+prob <- predict(glm1, type = "response")
+auc  <- as.numeric(pROC::auc(md$any_fdi, prob, quiet = TRUE))
+fit_tab <- data.frame(
+  Quantity = c("Log-likelihood at MLE", "Null deviance", "Residual deviance",
+               "LR chi-square (null - residual)", "In-sample AUC"),
+  Value = c(round(ll, 1), round(glm1$null.deviance, 1), round(glm1$deviance, 1),
+            sprintf("%.1f on %d df (p %s)", lr, lrdf,
+                    format.pval(pchisq(lr, lrdf, lower.tail = FALSE), digits = 2)),
+            round(auc, 3))
+)
+kable(fit_tab, booktabs = TRUE,
+      caption = "Maximum-likelihood fit statistics for the logistic model.")
+```
+
+Reading the aside carefully is itself instructive. **Firm size** dominates the log-odds of
+investing abroad at all (a large, highly significant positive coefficient), exactly as in
+the continuous model. **Board ties**, however, illustrate a classic partial-vs-marginal
+subtlety: *unconditionally*, tied firms invest abroad far more often
+(`r sprintf("%.0f%%", 100*mean(md$any_fdi[md$Board_Ties_to_State_Banks==1]))` vs
+`r sprintf("%.0f%%", 100*mean(md$any_fdi[md$Board_Ties_to_State_Banks==0]))`), but once firm
+size and industry are held fixed the *conditional* log-odds coefficient is small and not
+significant (odds ratio $= `r round(exp(coef(glm1)["Board_Ties_to_State_Banks"]),2)`$,
+$p = `r round(coef(summary(glm1))["Board_Ties_to_State_Banks","Pr(>|z|)"],3)`$) — tied firms
+tend to be large firms, and size absorbs the raw association. This is a reminder that
+binarizing a continuous outcome discards information and can shift a coefficient's apparent
+role; the paper's finding lives on the *amount* of FDI, not the yes/no margin. The
+likelihood-ratio test nonetheless overwhelmingly rejects the null of no predictors, driven
+by firm size.
+
+# Flexible mean functions in firm size
+
+Firm size is the dominant predictor, and the diagnostics hinted its effect is not a straight
+line. We now model the FDI–size relationship with progressively more flexible mean
+functions, holding the other model-4 controls linear throughout so the comparison isolates
+the *functional form of size*:
+
+1. **Linear** — the model-4 term, `Firm_Size` entered linearly.
+2. **Polynomial** — `poly(Firm_Size, 3)`, a cubic.
+3. **Natural spline** — `splines::ns(Firm_Size, df = 5)`.
+4. **B-spline** — `splines::bs(Firm_Size, df = 6)`.
+5. **GAM** — `mgcv::gam` with a penalized smooth `s(Firm_Size)`; the smoothness is chosen
+   automatically by GCV/REML rather than fixed by hand.
+
+```{r flex-fit}
+ctrl <- "+ Board_Ties_to_State_Banks + Debt_Ratio + Profitability + Chaebol + factor(sic_category)"
+f_lin  <- as.formula(paste("FDIProjects_Amount ~ Firm_Size", ctrl))
+f_poly <- as.formula(paste("FDIProjects_Amount ~ poly(Firm_Size, 3)", ctrl))
+f_ns   <- as.formula(paste("FDIProjects_Amount ~ ns(Firm_Size, df = 5)", ctrl))
+f_bs   <- as.formula(paste("FDIProjects_Amount ~ bs(Firm_Size, df = 6)", ctrl))
+
+fit_lin  <- lm(f_lin,  data = md)
+fit_poly <- lm(f_poly, data = md)
+fit_ns   <- lm(f_ns,   data = md)
+fit_bs   <- lm(f_bs,   data = md)
+fit_gam  <- gam(FDIProjects_Amount ~ s(Firm_Size) + Board_Ties_to_State_Banks +
+                  Debt_Ratio + Profitability + Chaebol + factor(sic_category),
+                data = md, method = "REML")
+```
+
+## Polynomial vs linear
+
+A partial-$F$ test of the cubic against the linear term asks whether the extra curvature
+buys significant in-sample fit.
+
+```{r poly-anova, results='asis'}
+av <- anova(fit_lin, fit_poly)
+pa <- data.frame(
+  Comparison = c("Linear", "Cubic polynomial"),
+  `Resid. df` = round(av$Res.Df, 0),
+  RSS = round(av$RSS, 1),
+  `F` = c(NA, round(av$F[2], 2)),
+  `p value` = c(NA, format.pval(av$`Pr(>F)`[2], digits = 3)),
+  check.names = FALSE, row.names = NULL
+)
+kable(pa, booktabs = TRUE,
+      caption = "Nested-F test: cubic polynomial in firm size vs. the linear term (other controls identical).")
+```
+
+## Fitted size curves
+
+To visualize each fit's implied FDI–size curve we predict over a grid of firm size while
+holding every other predictor at a representative value (median for continuous, modal SIC,
+no board ties, non-chaebol). The figure below overlays them on the raw data.
+
+```{r curves, fig.width=7, fig.height=4.3, fig.cap="Fitted FDI-vs-firm-size curves from five mean functions, holding other predictors at representative values. The linear term is monotone and misses the rise at large firm size; the spline and GAM track a steeper, saturating nonlinearity."}
+grid <- data.frame(
+  Firm_Size = seq(quantile(md$Firm_Size, .01), quantile(md$Firm_Size, .99), length.out = 200),
+  Board_Ties_to_State_Banks = 0,
+  Debt_Ratio    = median(md$Debt_Ratio),
+  Profitability = median(md$Profitability),
+  Chaebol       = 0,
+  sic_category  = factor(names(sort(table(md$sic_category), decreasing = TRUE))[1],
+                         levels = levels(md$sic_category))
+)
+grid$Linear     <- predict(fit_lin,  newdata = grid)
+grid$Polynomial <- predict(fit_poly, newdata = grid)
+grid$NatSpline  <- predict(fit_ns,   newdata = grid)
+grid$BSpline    <- predict(fit_bs,   newdata = grid)
+grid$GAM        <- predict(fit_gam,  newdata = grid)
+
+long <- do.call(rbind, lapply(
+  c("Linear","Polynomial","NatSpline","BSpline","GAM"),
+  function(m) data.frame(Firm_Size = grid$Firm_Size, yhat = grid[[m]], Model = m)))
+long$Model <- factor(long$Model, levels = c("Linear","Polynomial","NatSpline","BSpline","GAM"))
+
+ggplot() +
+  geom_point(data = md, aes(Firm_Size, FDIProjects_Amount),
+             colour = "grey70", size = 0.7, alpha = 0.5) +
+  geom_line(data = long, aes(Firm_Size, yhat, colour = Model, linetype = Model),
+            linewidth = 0.9) +
+  labs(x = "Firm size (scaled market cap)", y = "Predicted FDI amount (logged)",
+       colour = NULL, linetype = NULL) +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "top")
+```
+
+## The GAM smooth
+
+The figure below plots the penalized smooth $s(\texttt{Firm\_Size})$ from `mgcv::gam`
+directly (partial effect, other terms held at their means), with the estimated degrees of
+freedom that quantify how far it bends away from a straight line.
+
+```{r gam, fig.width=6, fig.height=3.8, fig.cap="GAM penalized smooth of firm size on logged FDI (mgcv, REML). The shaded band is the pointwise 95% CI; the effective degrees of freedom exceed 1, confirming statistically detectable curvature."}
+edf <- summary(fit_gam)$s.table["s(Firm_Size)", "edf"]
+plot(fit_gam, select = 1, shade = TRUE, seWithMean = TRUE,
+     xlab = "Firm size (scaled market cap)",
+     ylab = "s(Firm size)  [partial effect on logged FDI]",
+     main = sprintf("GAM smooth of firm size (edf = %.2f)", edf))
+```
+
+The smooth's effective degrees of freedom is `r sprintf("%.2f", summary(fit_gam)$s.table["s(Firm_Size)","edf"])`
+(a straight line would be exactly 1), and the smooth term is significant
+($p `r format.pval(summary(fit_gam)$s.table["s(Firm_Size)","p-value"], digits=2)`$): the
+FDI–size relationship genuinely curves.
+
+# Out-of-sample comparison of all extensions
+
+In-sample fit always improves with flexibility, so the honest test is held-out prediction.
+Under a common 10-fold cross-validation we score each mean function by out-of-sample RMSE
+and $R^2$ on the continuous FDI outcome. All five share the identical control set; they
+differ only in how firm size enters.
+
+```{r cv}
+rmse <- function(a, b) sqrt(mean((a - b)^2))
+r2   <- function(a, b) 1 - sum((a - b)^2) / sum((a - mean(a))^2)
+
+K <- 10
+folds <- sample(rep(1:K, length.out = nrow(md)))
+models <- c("Linear", "Polynomial", "NatSpline", "BSpline", "GAM")
+preds  <- matrix(NA, nrow(md), length(models), dimnames = list(NULL, models))
+
+for (k in 1:K) {
+  tr <- folds != k; te <- folds == k
+  dtr <- md[tr, ]; dte <- md[te, ]
+  preds[te, "Linear"]     <- predict(lm(f_lin,  data = dtr), newdata = dte)
+  preds[te, "Polynomial"] <- predict(lm(f_poly, data = dtr), newdata = dte)
+  # ns/bs basis pinned to the TRAINING range so test points map through the same basis
+  preds[te, "NatSpline"]  <- predict(lm(f_ns, data = dtr), newdata = dte)
+  preds[te, "BSpline"]    <- predict(lm(f_bs, data = dtr), newdata = dte)
+  gtr <- gam(FDIProjects_Amount ~ s(Firm_Size) + Board_Ties_to_State_Banks +
+               Debt_Ratio + Profitability + Chaebol + factor(sic_category),
+             data = dtr, method = "REML")
+  preds[te, "GAM"] <- predict(gtr, newdata = dte)
+}
+
+baseline_rmse <- rmse(md$FDIProjects_Amount, rep(mean(md$FDIProjects_Amount), nrow(md)))
+
+cv_tab <- data.frame(
+  `Mean function` = models,
+  `CV RMSE` = round(apply(preds, 2, function(p) rmse(md$FDIProjects_Amount, p)), 3),
+  `CV R2`   = round(apply(preds, 2, function(p) r2(md$FDIProjects_Amount, p)), 3),
+  check.names = FALSE, row.names = NULL
+)
+```
+
+```{r cv-table, results='asis'}
+kable(cv_tab, booktabs = TRUE,
+      caption = sprintf("Out-of-sample prediction (10-fold CV), continuous FDI outcome. All models share the model-4 controls; only the firm-size term differs. Naive mean-only baseline RMSE = %.3f. Lower RMSE / higher R2 is better.", baseline_rmse))
+```
+
+```{r cv-plot, fig.width=6.5, fig.height=3.2, fig.cap="Cross-validated RMSE by mean function. Moving from a straight line to a spline or GAM in firm size lowers held-out error; the extra flexibility of the B-spline/poly is not free once cross-validated."}
+cv_plot <- cv_tab
+cv_plot$`Mean function` <- factor(cv_plot$`Mean function`, levels = rev(models))
+ggplot(cv_plot, aes(`Mean function`, `CV RMSE`)) +
+  geom_col(fill = "grey30") + coord_flip() +
+  geom_hline(yintercept = baseline_rmse, linetype = "dashed", colour = "grey50") +
+  labs(x = NULL, y = "10-fold CV RMSE (dashed = mean-only baseline)") +
+  theme_minimal(base_size = 11)
+```
+
+# Takeaway
+
+The published OLS result reproduces **exactly**: board ties to state banks raise firm FDI
+($\hat\beta = 0.548$, $p = 0.017$), with firm size the dominant driver
+($\hat\beta = 1.363$). Reading that model as a proper multiple regression, each slope is a
+partial effect; but its residual diagnostics are unambiguous — non-flat residuals-vs-fitted,
+a heavy-tailed QQ plot, clear heteroscedasticity (so we report HC3 robust SEs), and a few
+influential firms. The logistic / MLE aside re-expresses the analysis on a binary
+"any-FDI" outcome via the log-likelihood, deviance, and log-odds: firm size again dominates,
+while board ties show a positive *marginal* association that shrinks to insignificance once
+size is controlled — a reminder that binarizing a continuous outcome can move a
+coefficient's apparent role, and that the paper's result lives on the FDI amount.
+
+The core Day-2 lesson is about **functional form**. A partial-$F$ test rejects the linear
+firm-size term in favour of a cubic; a `mgcv::gam` smooth has effective df well above 1 and
+is significant; and the natural-spline and GAM curves in the fitted-curve figure bend where
+the straight line cannot. Crucially, cross-validation keeps this honest: the spline and GAM
+lower held-out RMSE relative to the linear term, whereas piling on unpenalized flexibility
+(high-df B-spline, cubic poly) can *hurt* out of sample. Flexible regression sharpens the
+firm-size relationship's shape while leaving the sign and substance of the paper's argument
+intact.
