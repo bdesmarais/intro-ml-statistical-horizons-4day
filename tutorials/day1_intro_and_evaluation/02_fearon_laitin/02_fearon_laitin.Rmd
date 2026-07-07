@@ -375,6 +375,62 @@ The ROC-AUC looks strong (~0.8), but the **PR-AUC** is far more modest — the h
 cases are onsets. This is the key evaluation lesson: *on imbalanced data, ROC-AUC flatters a model and
 precision-recall tells the truth.*
 
+## Calibration (the reliability curve)
+
+ROC and precision-recall grade how well the predictions **rank** country-years, but not whether the predicted
+probabilities are **numerically right**: if the model says "5% risk," does onset actually occur in about 5% of
+such years? That is **calibration**, the third member of the Day-1 classification-metric suite (**ROC / PR /
+calibration**). We assess it on the same held-out predictions by binning them into deciles of predicted risk,
+comparing the mean predicted probability in each bin to the observed onset rate, and plotting the pairs against
+a 45-degree reference line — the **reliability curve**. Points below the diagonal mean the model was
+**over-confident** (predicted more risk than materialized); points above mean it was **under-confident**.
+
+```{r calibration}
+# Decile bins of held-out predicted risk; observed onset rate per bin.
+brk <- quantile(pred, probs = seq(0, 1, 0.1))
+brk[1] <- -Inf; brk[length(brk)] <- Inf     # guard the endpoints
+bin <- cut(pred, breaks = unique(brk), include.lowest = TRUE)
+cal <- data.frame(
+  pred_mean = tapply(pred, bin, mean),       # mean predicted probability in bin
+  obs_rate  = tapply(y,    bin, mean),        # observed onset rate in bin
+  n         = tapply(y,    bin, length))
+cal <- cal[!is.na(cal$pred_mean), ]
+
+# Summary statistics: Brier score, and a calibration intercept/slope from
+# regressing the 0/1 outcome on the predicted log-odds (Cox calibration).
+brier <- mean((pred - y)^2)
+lp    <- qlogis(pmin(pmax(pred, 1e-6), 1 - 1e-6))   # linear predictor (log-odds)
+cal_fit <- glm(y ~ lp, family = binomial)
+cat(sprintf("Brier score           = %.4f  (lower is better; base-rate model = %.4f)\n",
+            brier, mean((mean(y) - y)^2)))
+cat(sprintf("Calibration intercept = %+.3f  (0 = no systematic over/under-prediction)\n",
+            coef(cal_fit)[1]))
+cat(sprintf("Calibration slope     = %.3f  (1 = predictions correctly spread)\n",
+            coef(cal_fit)[2]))
+```
+
+```{r calibration-plot, echo=FALSE, fig.height=3.4, fig.cap="Reliability curve for the held-out logit. Each point is a decile of predicted risk: mean predicted probability (x) vs. observed onset rate (y), with point size proportional to the number of country-years. Points on the dashed 45-degree line are perfectly calibrated; below it is over-confident, above it under-confident."}
+ggplot(cal, aes(pred_mean, obs_rate)) +
+  geom_abline(slope = 1, intercept = 0, linetype = 2, colour = "grey60") +
+  geom_line(colour = "#6a3d9a", linewidth = .5) +
+  geom_point(aes(size = n), colour = "#6a3d9a") +
+  scale_size_area(max_size = 6, guide = "none") +
+  labs(x = "mean predicted probability (decile)",
+       y = "observed onset rate", title = "Calibration (held-out)") +
+  coord_equal() +
+  theme_bw(base_size = 9)
+```
+
+**Reading the reliability curve.** The low-risk deciles hug the diagonal — where the model predicts near-zero
+risk, onset is indeed near-zero — but the highest-risk bins are where the honest test lies, and here the curve
+tends to sit **below** the 45-degree line: the model assigns somewhat **more** risk than the data deliver, i.e.
+mild **over-confidence** at the top of the distribution (a calibration **slope below 1** says the same thing —
+the predicted probabilities are spread a little too widely). The **Brier score** already beats the base-rate
+model, and the near-zero calibration **intercept** shows no gross systematic bias. Together the three
+metrics tell the full story: the logit **ranks** onset risk well (ROC), finds real but scarce signal among the
+rare positives (PR), and produces probabilities that are **broadly trustworthy** if slightly over-confident at
+the extreme (calibration).
+
 # Takeaway
 
 This example illustrates **out-of-sample classification with a published regression** and the
@@ -387,4 +443,4 @@ honest. (A later example — Gibler–Braithwaite — extends this rare-event se
 
 1. Replace the single split with stratified 5-fold CV and report mean AUC-PR (the outcome is ~1.7% positive, so use AUC-PR, not accuracy).
 2. Fit an L1-penalized logistic regression and compare its AUC-PR and retained variables to the full logit.
-3. Plot the calibration (reliability) curve of the predicted probabilities and comment on over/under-confidence.
+3. The reliability curve above bins predicted risk into deciles; recompute it with a **smoother** (e.g. `loess` of the 0/1 outcome on predicted probability) and check whether the over-confidence at high risk survives a bin-free estimate. Then recalibrate the probabilities (Platt scaling — refit `glm(y ~ predicted_logodds)`) and confirm the calibration slope moves toward 1.
