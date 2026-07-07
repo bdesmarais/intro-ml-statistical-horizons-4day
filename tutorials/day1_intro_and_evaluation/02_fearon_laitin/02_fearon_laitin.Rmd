@@ -52,7 +52,7 @@ Fearon and Laitin ask **what conditions make civil war likely** worldwide from 1
 # Descriptive results
 
 ```{r data}
-d <- read.csv("https://raw.githubusercontent.com/bdesmarais/intro-ml-statistical-horizons-4day/main/tutorials/02_fearon_laitin_day1/data/SambnisImp.csv")
+d <- read.csv("https://raw.githubusercontent.com/bdesmarais/intro-ml-statistical-horizons-4day/main/tutorials/day1_intro_and_evaluation/02_fearon_laitin/data/SambnisImp.csv")
 fl <- c("warhist", "ln_gdpen", "lpopns", "lmtnest", "ncontig", "oil", "nwstate",
         "inst3", "pol4", "ef", "relfrac")
 d <- d[complete.cases(d[, c("warstds", fl)]), c("warstds", fl)]

@@ -55,7 +55,7 @@ predicts new states better than ordinary least squares.
 # Descriptive results
 
 ```{r data}
-d <- read.csv("https://raw.githubusercontent.com/bdesmarais/intro-ml-statistical-horizons-4day/main/tutorials/12_state_welfare_spending_day1/data/state_welfare_spending.csv")
+d <- read.csv("https://raw.githubusercontent.com/bdesmarais/intro-ml-statistical-horizons-4day/main/tutorials/day3_regularization_and_selection/12_state_welfare_spending/data/state_welfare_spending.csv")
 preds <- setdiff(names(d), c("st", "welfare_spending_percap"))
 cat(sprintf("%d states x %d predictors (p/n = %.2f)\n", nrow(d), length(preds), length(preds)/nrow(d)))
 round(t(sapply(d[c("welfare_spending_percap", preds)],

@@ -50,7 +50,7 @@ Cortez and colleagues ask whether **objective physicochemical measurements** of 
 # Descriptive results
 
 ```{r data}
-url <- "https://raw.githubusercontent.com/bdesmarais/intro-ml-statistical-horizons-4day/main/tutorials/10_wine_quality_day1/data/winequality-red.csv"
+url <- "https://raw.githubusercontent.com/bdesmarais/intro-ml-statistical-horizons-4day/main/tutorials/day2_regression_extensions/10_wine_quality/data/winequality-red.csv"
 d <- read.csv(url, sep = ";")
 names(d) <- make.names(names(d))
 preds <- setdiff(names(d), "quality")

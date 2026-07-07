@@ -50,7 +50,7 @@ Where a snake chooses to be reveals its **habitat and thermal requirements**, wh
 # Descriptive results
 
 ```{r data}
-d <- read.csv("https://raw.githubusercontent.com/bdesmarais/intro-ml-statistical-horizons-4day/main/tutorials/07_snake_rsf_day2/data/snake_clean.csv")
+d <- read.csv("https://raw.githubusercontent.com/bdesmarais/intro-ml-statistical-horizons-4day/main/tutorials/day4_classic_learners/07_snake_rsf/data/snake_clean.csv")
 preds <- setdiff(names(d), "Response")
 preds <- preds[sapply(d[preds], function(x) length(unique(x)) > 1)]
 

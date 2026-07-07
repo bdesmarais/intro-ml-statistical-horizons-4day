@@ -57,7 +57,7 @@ state-politics measures.
 # Descriptive results
 
 ```{r data}
-d <- read.csv("https://raw.githubusercontent.com/bdesmarais/intro-ml-statistical-horizons-4day/main/tutorials/11_state_policy_liberalism_day1/data/state_policy_liberalism.csv")
+d <- read.csv("https://raw.githubusercontent.com/bdesmarais/intro-ml-statistical-horizons-4day/main/tutorials/day3_regularization_and_selection/11_state_policy_liberalism/data/state_policy_liberalism.csv")
 preds <- setdiff(names(d), c("st", "pollib_median"))
 cat(sprintf("%d states x %d predictors (p/n = %.2f)\n", nrow(d), length(preds), length(preds)/nrow(d)))
 round(t(sapply(d[c("pollib_median", preds)],

@@ -49,7 +49,7 @@ Tsanas and Xifara study how a building's **energy performance** depends on its *
 
 ```{r data}
 tmp_xlsx <- tempfile(fileext = ".xlsx")
-download.file("https://raw.githubusercontent.com/bdesmarais/intro-ml-statistical-horizons-4day/main/tutorials/09_energy_efficiency_day1/data/ENB2012_data.xlsx", tmp_xlsx, mode = "wb", quiet = TRUE)
+download.file("https://raw.githubusercontent.com/bdesmarais/intro-ml-statistical-horizons-4day/main/tutorials/day2_regression_extensions/09_energy_efficiency/data/ENB2012_data.xlsx", tmp_xlsx, mode = "wb", quiet = TRUE)
 d <- as.data.frame(read_excel(tmp_xlsx))   # data ships in the tutorial folder
 d <- d[, colSums(!is.na(d)) > 0]; d <- d[complete.cases(d), ]
 preds <- paste0("X", 1:8)

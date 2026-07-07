@@ -51,7 +51,7 @@ uses ten interpretable features; the regularization section uses De Cock's full 
 # Descriptive results
 
 ```{r data}
-d <- read.delim("https://raw.githubusercontent.com/bdesmarais/intro-ml-statistical-horizons-4day/main/tutorials/08_ames_housing_day1/data/AmesHousing.txt",
+d <- read.delim("https://raw.githubusercontent.com/bdesmarais/intro-ml-statistical-horizons-4day/main/tutorials/day3_regularization_and_selection/08_ames_housing/data/AmesHousing.txt",
                 stringsAsFactors = FALSE, check.names = TRUE)
 feats <- c("Overall.Qual", "Gr.Liv.Area", "Total.Bsmt.SF", "Garage.Cars", "Year.Built",
            "Year.Remod.Add", "Full.Bath", "TotRms.AbvGrd", "Lot.Area", "Fireplaces")
