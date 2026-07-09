@@ -11,7 +11,7 @@ Everything a participant needs: the slide decks, the hands-on R tutorials, and t
 slides/       Compiled slide decks (PDF), one per day
 tutorials/    Hands-on R Markdown tutorials + data, grouped by the day they're covered
   day1_intro_and_evaluation/
-      02_fearon_laitin, desposato_wang_wu_trust
+      gerber_green_larimer_turnout, desposato_wang_wu_trust
   day2_regression_extensions/
       kim_fdi_networks, elaissaoui_student_grades
   day3_regularization_and_selection/
@@ -22,7 +22,7 @@ tutorials/    Hands-on R Markdown tutorials + data, grouped by the day they're c
 
 Every tutorial **reproduces a specific published regression table exactly** (verified coefficient-by-
 coefficient against the original article), then extends it with the day's methods and opens with an
-extensive descriptive analysis of its data. Studies span political science (turnout, civil-war onset,
+extensive descriptive analysis of its data. Studies span political science (turnout, voter turnout (field-experimental),
 political trust, FDI, media coverage, interstate conflict, policing), education (student grades), and
 public health (COVID severity).
 
