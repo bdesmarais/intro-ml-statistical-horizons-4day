@@ -595,42 +595,55 @@ of the ladder helps, history helps most, and the full model wins on both metrics
 The turnout--age profile in the EDA was strongly curved, so *some* flexibility in
 age must help --- but how much? We take the full model and sweep the **degree of
 the age polynomial** from 1 (a straight line in the log-odds; most rigid, most
-*bias*) to 8 (a wiggly curve that can chase sample noise; most *variance*),
+*bias*) upward until the cross-validated loss stops improving and turns back up
+(most *variance*),
 recording the **training** log-loss (fit and scored on all rows) and the
 **cross-validated** log-loss (household folds as above) at each degree.
 
-```{r validation-curve, cache=TRUE, fig.height=3.6, fig.cap="Validation curve for the age-polynomial degree in the full logit. Training log-loss falls monotonically with flexibility; CV log-loss drops sharply from degree 1 to 2-3 and then flattens, with the minimum marked by the dashed line. At n = 344,084 even a degree-8 polynomial barely overfits, so the right-hand rise is shallow -- the classic U is compressed by sample size."}
-degs <- 1:8
+```{r validation-curve, cache=TRUE, fig.height=3.6, fig.cap="Validation curve for the age-polynomial degree in the full logit. Training log-loss falls monotonically with flexibility; CV log-loss drops sharply through degree 2-3, reaches its minimum (dashed line) in a flat region, and then turns back up -- the right-hand side of the U is real even at n = 344,084, just shallow. The sweep continues past the minimum until the upturn is visible."}
+degs <- 1:14
 form_deg <- function(p)
   update(f_hist, as.formula(paste(
     ". ~ . + poly(age,", p, ") + female + hh_size")))
-vc <- data.frame(degree = degs, Train = NA_real_, CV = NA_real_)
+vc <- data.frame(degree = degs, Train = NA_real_, CV = NA_real_,
+                 CV_se = NA_real_)
 for (i in seq_along(degs)) {
   p <- degs[i]
   fit_all <- glm(form_deg(p), ggl, family = binomial)
   vc$Train[i] <- logloss(ggl$voted, fitted(fit_all))
-  oof <- numeric(n)
+  fold_ll <- numeric(K)
   for (k in 1:K) {
     tri <- ggl$fold != k; tei <- !tri
     fit <- glm(form_deg(p), ggl[tri, ], family = binomial)
-    oof[tei] <- predict(fit, ggl[tei, ], type = "response")
+    fold_ll[k] <- logloss(ggl$voted[tei],
+                          predict(fit, ggl[tei, ], type = "response"))
   }
-  vc$CV[i] <- logloss(ggl$voted, oof)
+  vc$CV[i]    <- mean(fold_ll)
+  vc$CV_se[i] <- sd(fold_ll) / sqrt(K)
 }
 best_deg <- vc$degree[which.min(vc$CV)]
+# one-standard-error rule: simplest degree whose CV loss is within one SE
+# of the minimum -- the standard guard against chasing noise in a flat region
+thresh   <- min(vc$CV) + vc$CV_se[which.min(vc$CV)]
+best_1se <- min(vc$degree[vc$CV <= thresh])
 vl <- rbind(data.frame(degree = vc$degree, LogLoss = vc$Train,
                        Curve = "Training (in-sample)"),
             data.frame(degree = vc$degree, LogLoss = vc$CV,
                        Curve = "Cross-validated (held-out)"))
 ggplot(vl, aes(degree, LogLoss, colour = Curve)) +
   geom_line(linewidth = 0.8) + geom_point() +
-  geom_vline(xintercept = best_deg, linetype = "dashed",
-             colour = "grey40") +
+  geom_errorbar(data = data.frame(degree = vc$degree, LogLoss = vc$CV,
+                    Curve = "Cross-validated (held-out)",
+                    lo = vc$CV - vc$CV_se, hi = vc$CV + vc$CV_se),
+                aes(ymin = lo, ymax = hi), width = 0.25, linewidth = 0.4) +
+  geom_vline(xintercept = best_deg,  linetype = "dashed", colour = "grey40") +
+  geom_vline(xintercept = best_1se, linetype = "dotted", colour = "grey20") +
   scale_x_continuous(breaks = degs) +
   labs(x = "age polynomial degree --- more flexible to the right",
        y = "log-loss", colour = NULL,
-       title = paste0("Bias-variance: CV log-loss minimized at degree = ",
-                      best_deg)) +
+       title = paste0("CV minimum at degree ", best_deg,
+                      " (dashed); one-SE choice degree ", best_1se,
+                      " (dotted)")) +
   theme_minimal(base_size = 11) + theme(legend.position = "top")
 ```
 
@@ -641,24 +654,96 @@ knitr::kable(data.frame(degree = vc$degree,
              caption = "Validation-curve values: training vs. cross-validated log-loss by age-polynomial degree.")
 ```
 
-Two lessons. First, the familiar mechanics: training loss falls monotonically with
-degree (flexibility always fits the data it sees at least as well), while CV loss
-drops sharply as the polynomial captures the real curvature in the age profile
-and is minimized at degree `r best_deg`. Second, a lesson about **sample size and
-variance**: with 344,084 observations even a degree-8 polynomial has little room
-to chase noise, so the right-hand side of the U barely rises. Overfitting is a
-*ratio* of flexibility to data --- run this same curve on a 2,000-row subsample
-(Exercise 3) and the U reappears in force.
+Three lessons. First, the familiar mechanics: training loss falls monotonically
+with degree (flexibility always fits the data it sees at least as well), while CV
+loss drops sharply as the polynomial captures the real curvature in the age
+profile, bottoms out at degree `r best_deg`, and **turns back up** as still-higher
+degrees chase noise --- we deliberately extend the sweep past the minimum until
+that upturn is visible. Second, the minimum sits in a *flat, noisy region*: several
+adjacent degrees are within one standard error of it (the error bars). The standard
+response is the **one-standard-error rule** --- choose the *simplest* model whose CV
+loss is within one SE of the minimum --- which selects degree `r best_1se`. That is
+the model we carry forward. Third, a lesson about **sample size and variance**: at
+n = 344,084 the upturn is shallow, because overfitting is a *ratio* of flexibility
+to data. Shrink the data and the same sweep produces the textbook U. The next
+figure repeats the exercise on a random subsample of roughly 1,500 households
+($n \approx 2{,}900$ individuals):
 
-## ROC and precision--recall for the best model
+```{r validation-curve-sub, cache=TRUE, fig.height=3.4, fig.cap="The same validation curve on a random subsample of about 2,900 individuals. With 1 percent of the data, the classic U appears in force: CV log-loss is minimized at a much lower degree and blows up quickly beyond it, while training loss keeps falling. Overfitting is a ratio of flexibility to data."}
+set.seed(7)
+hh_sub  <- sample(unique(ggl$hh_id), 1500)
+sub     <- ggl[ggl$hh_id %in% hh_sub, ]
+fold_s  <- sample(rep(1:K, length.out = length(hh_sub)))
+sub$fold <- fold_s[match(sub$hh_id, hh_sub)]
+degs_s  <- 1:12
+vcs <- data.frame(degree = degs_s, Train = NA_real_, CV = NA_real_)
+for (i in seq_along(degs_s)) {
+  p <- degs_s[i]
+  fit_all <- suppressWarnings(glm(form_deg(p), sub, family = binomial))
+  vcs$Train[i] <- logloss(sub$voted, fitted(fit_all))
+  oof <- numeric(nrow(sub))
+  for (k in 1:K) {
+    tri <- sub$fold != k
+    fit <- suppressWarnings(glm(form_deg(p), sub[tri, ], family = binomial))
+    oof[!tri] <- suppressWarnings(
+      predict(fit, sub[!tri, ], type = "response"))
+  }
+  vcs$CV[i] <- logloss(sub$voted, oof)
+}
+vls <- rbind(data.frame(degree = vcs$degree, LogLoss = vcs$Train,
+                        Curve = "Training (in-sample)"),
+             data.frame(degree = vcs$degree, LogLoss = vcs$CV,
+                        Curve = "Cross-validated (held-out)"))
+ggplot(vls, aes(degree, LogLoss, colour = Curve)) +
+  geom_line(linewidth = 0.8) + geom_point() +
+  geom_vline(xintercept = vcs$degree[which.min(vcs$CV)],
+             linetype = "dashed", colour = "grey40") +
+  scale_x_continuous(breaks = degs_s) +
+  labs(x = "age polynomial degree", y = "log-loss", colour = NULL,
+       title = sprintf(
+         "Same sweep, n = %s: the classic U (CV minimum at degree %d)",
+         format(nrow(sub), big.mark = ","),
+         vcs$degree[which.min(vcs$CV)])) +
+  theme_minimal(base_size = 11) + theme(legend.position = "top")
+```
 
-We now evaluate the CV-best model (full logit, age degree `r best_deg`) on the
+The chosen degree is not an ornament: **we carry the one-SE model forward** and
+everything in the next two sections --- ROC, precision--recall, and calibration ---
+is that model, refit on the training households only and scored on the untouched
+test households.
+
+## Testing the CV-chosen model out of sample: ROC and precision--recall
+
+Does the degree chosen by cross-validation actually validate on data it never
+touched? Before the curves, the direct check --- test-set log-loss and AUC for the
+rigid (degree-1), one-SE-chosen (degree-`r best_1se`), CV-minimum (degree-`r best_deg`), and most-flexible (degree-14)
+versions of the full model, each fit on training households only:
+
+```{r test-degree-check, cache=TRUE}
+deg_check <- unique(c(1, best_1se, best_deg, 14))
+tab <- data.frame(degree = deg_check, Test_LogLoss = NA_real_,
+                  Test_AUC = NA_real_)
+for (i in seq_along(deg_check)) {
+  m <- suppressWarnings(
+    glm(form_deg(deg_check[i]), train, family = binomial))
+  pp <- suppressWarnings(predict(m, test, type = "response"))
+  tab$Test_LogLoss[i] <- logloss(test$voted, pp)
+  tab$Test_AUC[i] <- as.numeric(
+    pROC::auc(pROC::roc(test$voted, pp, quiet = TRUE, direction = "<")))
+}
+knitr::kable(tab, digits = 5,
+  caption = "Out-of-sample check of the CV choice on untouched test households: the one-SE degree matches the CV-minimum degree to the fourth decimal at a fraction of the flexibility; degree 14 buys nothing.")
+```
+
+The one-SE model performs indistinguishably from the CV minimum on the untouched
+test households at a fraction of the flexibility --- cross-validation plus the one-SE
+rule did their job. We now evaluate this model (full logit, age degree `r best_1se`) on the
 held-out household test set from the single split, starting with the ROC curve:
 the tradeoff between the true-positive rate and the false-positive rate as the
 classification threshold sweeps from 1 to 0.
 
 ```{r roc, fig.height=3.8, fig.cap="ROC curves on the held-out test set. The full model dominates the treatment-only model everywhere; the treatment-only curve hugs the diagonal, showing that experimental assignment alone barely ranks voters above non-voters."}
-m_best  <- glm(form_deg(best_deg), train, family = binomial)
+m_best  <- glm(form_deg(best_1se), train, family = binomial)
 p_best  <- predict(m_best, test, type = "response")
 roc_best <- pROC::roc(test$voted, p_best,  quiet = TRUE, direction = "<")
 roc_tr   <- pROC::roc(test$voted, p_tr,    quiet = TRUE, direction = "<")
