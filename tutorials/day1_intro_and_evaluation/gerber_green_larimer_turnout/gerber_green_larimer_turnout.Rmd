@@ -861,32 +861,15 @@ sure-thing voters or hopeless abstainers). Keeping "predicts well" and "identifi
 a causal effect" distinct --- and knowing which one your model is delivering ---
 is the most important habit this course teaches.
 
-# Exercises
+# Independent exercise (about 10 minutes)
 
-1. **Logit reproduction.** Refit the Table 3(a) specification as a logistic
-   regression (`glm(voted ~ treatment, family = binomial)`) with
-   household-clustered SEs. Convert the Neighbors coefficient into an average
-   marginal effect (average the difference in predicted probabilities with
-   everyone assigned to Neighbors vs. Control). How close is it to the OLS
-   coefficient of .081, and why does the linear probability model work so well
-   here?
+The tutorial's train/test split samples *households* (Section 5.2) to prevent
+leakage. Check how much that choice matters:
 
-2. **Individual vs. household splits.** Rerun the train/test comparison in
-   Section 5.2, but sample *individuals* rather than households into the test
-   set. Compare the test log-loss and AUC of the full model under the two
-   protocols. In which direction does the individual-level split bias the
-   evaluation, and how large is the leakage effect?
-
-3. **Bias--variance and sample size.** Draw a random subsample of 2,000
-   individuals and recompute the validation curve of Section 5.4 (age degree 1
-   through 8, using simple 10-fold CV within the subsample). Compare the shape of
-   the CV curve to the full-data version: where is the minimum now, and how sharp
-   is the overfitting penalty at degree 8?
-
-4. **Household context and heterogeneous targeting.** Add the pre-treatment
-   household means `p2004_mean` and `g2004_mean`, plus an interaction between
-   `treatment` and `p2004`, to the full model. Does household context improve
-   held-out log-loss? Then use the interaction model to ask a targeting question:
-   among which voters (habitual primary voters vs. non-voters) does the model
-   predict the Neighbors mailing to matter most, and does that match the
-   subgroup means you can compute directly from the experiment?
+1. Make an alternative 70/30 split that samples *individuals* (rows of `ggl`)
+   instead of households, ignoring `hh_id`.
+2. Refit the full model (`glm(f_full, ...)`) on the new training rows and
+   recompute test log-loss and AUC with `logloss()` and `auc_of()`.
+3. Compare with the full-model row of the household-split table. Which
+   direction does the individual-level split move the scores, and why is the
+   household split the honest one?

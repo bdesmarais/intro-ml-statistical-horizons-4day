@@ -839,3 +839,14 @@ delivers the key methodological point: **regularization and best-subset selectio
 match the full logit's accuracy while cutting the model to a third of its size** ---
 a win for parsimony and stability rather than for raw prediction, which is exactly
 the right expectation when the signal is low-dimensional.
+
+# Independent exercise (about 10 minutes)
+
+In the held-out comparison the lasso is scored at `lambda.1se` while ridge and
+the elastic net are scored at `lambda.min`.
+
+1. Re-score the elastic net at `s = "lambda.1se"` in the `oos` chunk and
+   compare its AUC and PR-AUC with the `lambda.min` version.
+2. Count the predictors the 1-SE elastic net retains (mirror the keep-table
+   chunk) and compare with the `lambda.min` support. On these data, what does
+   the 1-SE rule buy, and what does it cost?

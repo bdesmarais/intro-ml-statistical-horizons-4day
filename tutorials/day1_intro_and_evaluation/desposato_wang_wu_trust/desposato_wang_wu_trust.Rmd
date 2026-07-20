@@ -760,3 +760,16 @@ Day 1's toolkit, demonstrated end to end on the reproduced trust model:
 - **Back to the regression.** Under honest CV the reproduced OLS ties the CV-best
   polynomial model and beats the baseline: the paper's explanatory model is also a
   sound predictive one, and its low overfitting risk is *why* its inference holds up.
+
+# Independent exercise (about 10 minutes)
+
+The final comparison showed the reproduced OLS captures close to all the
+predictable signal in these six variables. Find out how much of it one control
+carries:
+
+1. Refit the reproduced specification *without* `Education`, reusing the same
+   `folds`: copy the loop from the final-comparison chunk and edit the formula.
+2. Compare the new out-of-fold RMSE and $R^2$ with `cv_rmse_ols` and the mean
+   baseline in `final_tab`. Does dropping the strongest control move the model
+   noticeably toward the baseline, or is the Tiananmen-cohort signal doing the
+   work on its own?

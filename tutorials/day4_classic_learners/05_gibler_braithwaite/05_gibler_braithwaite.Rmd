@@ -445,9 +445,10 @@ Escalation to fatality depends on interactions among contiguity, power asymmetry
 that a linear logit cannot fully represent. Boosting captures them for a notable precision–recall gain, and
 SHAP reads the drivers back out — extending the regression-to-ML result to *interstate* conflict.
 
+# Independent exercise (about 10 minutes)
 
-# Recommended exercises
-
-1. Expand the XGBoost tuning grid (depth, learning rate, rounds) and see whether AUC-PR improves over the reported value.
-2. Add one more learner (e.g., a random forest with a different number of features per split) and rank it against the others.
-3. Produce a SHAP dependence plot for a predictor other than the top one and interpret its shape.
+Produce a SHAP dependence plot for one predictor *other than* the top-ranked
+one (pick any from the importance ranking, reusing the plotting code above).
+In a sentence or two: is its shape linear, threshold-like, or does the vertical
+spread suggest an interaction --- and could the published logit have
+represented that shape?

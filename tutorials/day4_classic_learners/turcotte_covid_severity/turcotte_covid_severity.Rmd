@@ -682,3 +682,11 @@ dominant risk factors, and reveal a saturating O$_2$ effect — a teaching illus
 small clinical cohorts with a well-specified regression, the honest ML lesson is often "the GLM was
 already good," with the learners earning their keep as an interpretation cross-check rather than a
 prediction win.
+
+# Independent exercise (about 10 minutes)
+
+k-NN is the one learner here whose *predictions* depend on the scale of the
+inputs. Re-run the k-selection chunk with `o2L` and `temp` left in raw units
+(skip the `scale()` step), then compare the CV-chosen $k$ and its ROC-AUC on
+one 70/30 split with the standardized version. Why does leaving `temp`
+(roughly 97--103) and `o2L` (0--15) unscaled distort the neighbour distances?

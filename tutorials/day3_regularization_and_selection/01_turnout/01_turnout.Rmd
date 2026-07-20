@@ -588,13 +588,11 @@ the same predictive cost, which is often the whole point.
   out-of-sample while yielding a **sparser, more interpretable** model — and the machinery pays off much more
   as dimensionality and collinearity grow.
 
-# Recommended exercises
+# Independent exercise (about 10 minutes)
 
-1. Re-run the out-of-sample comparison under several random seeds and report the spread in RMSE for each
-   method. Which method is most stable?
-2. Refit lasso and elastic net at `lambda.1se` (instead of `lambda.min`) in the out-of-sample block. How much
-   predictive accuracy do you trade for the simpler model?
-3. Add a handful of pure-noise predictors (`rnorm` columns) to `X` and refit. Do lasso and `abess` correctly
-   exclude them, and does regularization now beat OLS out-of-sample?
-4. Compare the `abess` support to the lasso support at several support sizes (`support.size = 3:8`). Where do
-   the two selection philosophies first disagree?
+1. In the out-of-sample block, re-score the lasso at `s = "lambda.1se"` instead
+   of `"lambda.min"`. How much held-out RMSE do you give up, and how many
+   predictors does the simpler model drop?
+2. Add five pure-noise columns (`rnorm(nrow(X))`) to `X`, re-split, and refit
+   the lasso. Does it exclude the noise, and does regularization now look
+   better relative to OLS?

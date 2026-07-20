@@ -887,3 +887,15 @@ lower held-out RMSE relative to the linear term, whereas piling on unpenalized f
 (high-df B-spline, cubic poly) can *hurt* out of sample. Flexible regression sharpens the
 firm-size relationship's shape while leaving the sign and substance of the paper's argument
 intact.
+
+# Independent exercise (about 10 minutes)
+
+The GAM bends only firm size. Test whether a second smooth is warranted:
+
+1. Refit the full-data GAM adding a smooth in the debt ratio --- replace
+   `Debt_Ratio` with `s(Debt_Ratio)` in the GAM formula (keep everything else
+   the same, `method = "REML"`).
+2. Read `summary()` of the new fit: what is the effective df of
+   `s(Debt_Ratio)`, and is it distinguishable from a straight line?
+3. If time allows, swap the new formula into the CV loop's GAM line and check
+   whether held-out RMSE improves on the reported GAM.

@@ -783,3 +783,16 @@ each fitted curve; and (iv) compared all four under one 10-fold cross-validation
 these five demographic/behavioral predictors relate to the grade almost linearly, so the flexible
 extensions match --- but do not beat --- the simple published regression out of sample. The tools
 matter; knowing *when* the data warrant them, from diagnostics and held-out error, matters more.
+
+# Independent exercise (about 10 minutes)
+
+The CV comparison bent only `absences`. Check whether bending a second
+predictor changes the verdict:
+
+1. Add a fifth entry to the `learners` list that wraps `goout` in a natural
+   spline --- `ns(goout, df = 4)` --- while keeping `absences` linear (start
+   from the OLS learner and edit its formula).
+2. Score it with `cv_one()` (the same folds are reused automatically) and place
+   its CV RMSE next to the four values in `cv_tab`.
+3. Does the extra spline beat the plain linear model, and is that consistent
+   with what the descriptive plots said about `goout`?
