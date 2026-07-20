@@ -861,15 +861,22 @@ sure-thing voters or hopeless abstainers). Keeping "predicts well" and "identifi
 a causal effect" distinct --- and knowing which one your model is delivering ---
 is the most important habit this course teaches.
 
-# Independent exercise (about 10 minutes)
+# Independent exercises (each about 10 minutes)
 
-The tutorial's train/test split samples *households* (Section 5.2) to prevent
-leakage. Check how much that choice matters:
+1. **Leaky splits.** Make a 70/30 split that samples *individuals* (rows of
+   `ggl`) instead of households, refit the full model
+   (`glm(f_full, ...)`), and recompute test log-loss and AUC with `logloss()`
+   and `auc_of()`. Which direction do the scores move relative to the
+   household-split table, and why is the household split the honest one?
 
-1. Make an alternative 70/30 split that samples *individuals* (rows of `ggl`)
-   instead of households, ignoring `hh_id`.
-2. Refit the full model (`glm(f_full, ...)`) on the new training rows and
-   recompute test log-loss and AUC with `logloss()` and `auc_of()`.
-3. Compare with the full-model row of the household-split table. Which
-   direction does the individual-level split move the scores, and why is the
-   household split the honest one?
+2. **Logit vs. the linear probability model.** Refit the Table 3(a)
+   specification as a logit: `glm(voted ~ treatment, ggl, family = binomial)`.
+   Compute the average marginal effect of Neighbors (mean difference in
+   predicted probabilities, everyone set to Neighbors vs. Control). How close
+   is it to the OLS coefficient of .081?
+
+3. **Accuracy vs. the base rate.** Using the full model's test-set predictions
+   `p_fu`, compute classification accuracy at a 0.5 threshold, and compare it
+   with the accuracy of the no-model rule "predict that nobody votes." What
+   does the comparison say about accuracy as a metric when the base rate is
+   near 30%?

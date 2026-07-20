@@ -683,10 +683,17 @@ small clinical cohorts with a well-specified regression, the honest ML lesson is
 already good," with the learners earning their keep as an interpretation cross-check rather than a
 prediction win.
 
-# Independent exercise (about 10 minutes)
+# Independent exercises (each about 10 minutes)
 
-k-NN is the one learner here whose *predictions* depend on the scale of the
-inputs. Re-run the k-selection chunk with `o2L` and `temp` left in raw units
-(skip the `scale()` step), then compare the CV-chosen $k$ and its ROC-AUC on
-one 70/30 split with the standardized version. Why does leaving `temp`
-(roughly 97--103) and `o2L` (0--15) unscaled distort the neighbour distances?
+1. **Why k-NN needs scaling.** Re-run the k-selection chunk with `o2L` and
+   `temp` left in raw units (skip the `scale()` step) and compare the chosen
+   $k$ and ROC-AUC on one 70/30 split with the standardized version. Why does
+   raw `temp` (roughly 97--103) distort the neighbour distances?
+
+2. **Tree depth on a small n.** Refit the `rpart` tree with `cp = 0.001`
+   (deeper) and compare its ROC-AUC on one split with the `cp = 0.01` tree.
+   Does the deeper tree overfit a cohort of 111?
+
+3. **Partial dependence for a binary predictor.** Use `pdp_curve()` with
+   `rf_full` to draw the curve for `iddm` (grid `c(0, 1)`). With a binary
+   predictor, what two numbers does partial dependence reduce to?

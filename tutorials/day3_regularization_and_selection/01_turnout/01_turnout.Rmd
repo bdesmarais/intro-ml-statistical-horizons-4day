@@ -588,11 +588,16 @@ the same predictive cost, which is often the whole point.
   out-of-sample while yielding a **sparser, more interpretable** model — and the machinery pays off much more
   as dimensionality and collinearity grow.
 
-# Independent exercise (about 10 minutes)
+# Independent exercises (each about 10 minutes)
 
-1. In the out-of-sample block, re-score the lasso at `s = "lambda.1se"` instead
-   of `"lambda.min"`. How much held-out RMSE do you give up, and how many
-   predictors does the simpler model drop?
-2. Add five pure-noise columns (`rnorm(nrow(X))`) to `X`, re-split, and refit
-   the lasso. Does it exclude the noise, and does regularization now look
-   better relative to OLS?
+1. **The 1-SE rule.** In the out-of-sample block, re-score the lasso at
+   `s = "lambda.1se"` instead of `"lambda.min"`. How much held-out RMSE do you
+   give up, and how many predictors does the simpler model drop?
+
+2. **Noise immunity.** Add five pure-noise columns (`rnorm(nrow(X))`) to `X`,
+   re-split, and refit the lasso. Does it exclude the noise, and does
+   regularization now look better relative to OLS?
+
+3. **Two selection philosophies.** Refit `abess` with
+   `support.size = 3:8` and compare the selected support at each size with the
+   lasso's retained set. Where do the two methods first disagree?

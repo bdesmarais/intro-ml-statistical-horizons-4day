@@ -785,10 +785,16 @@ wrong (the nonlinear `years_lived` effect the partial-dependence plot exposes), 
 little where it is right. Interpretation tools --- permutation importance and partial
 dependence --- let us see that structure rather than take the ensemble's word for it.
 
-# Independent exercise (about 10 minutes)
+# Independent exercises (each about 10 minutes)
 
-The partial-dependence plot exposed a nonlinear `years_lived` effect. Draw the
-analogous curve for `education`: reuse the `pd_grid`/`pd_val` pattern with
-`rf_full`, sweeping `education` over its observed range instead. Is its shape
-closer to the straight line the OLS assumes, and does that square with where
-the ensembles did --- and did not --- beat OLS on the test set?
+1. **A second partial-dependence curve.** Reuse the `pd_grid`/`pd_val` pattern
+   with `rf_full` to sweep `education` instead of `years_lived`. Is its shape
+   closer to the straight line the OLS assumes?
+
+2. **Two importance definitions.** Refit `rf_full` with
+   `importance = "impurity"` and compare the top three predictors with the
+   permutation ranking. Do the two definitions agree?
+
+3. **k and the bias--variance tradeoff.** Re-score k-NN at `k = 5` and
+   `k = 50` (edit the `kknn` call that uses `best_k`) and compare test RMSE.
+   Which failure mode --- variance or bias --- does each extreme illustrate?

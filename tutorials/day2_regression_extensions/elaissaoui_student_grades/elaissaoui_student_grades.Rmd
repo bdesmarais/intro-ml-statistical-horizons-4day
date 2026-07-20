@@ -784,15 +784,17 @@ these five demographic/behavioral predictors relate to the grade almost linearly
 extensions match --- but do not beat --- the simple published regression out of sample. The tools
 matter; knowing *when* the data warrant them, from diagnostics and held-out error, matters more.
 
-# Independent exercise (about 10 minutes)
+# Independent exercises (each about 10 minutes)
 
-The CV comparison bent only `absences`. Check whether bending a second
-predictor changes the verdict:
+1. **Bend a second predictor.** Add a fifth entry to the `learners` list that
+   wraps `goout` in `ns(goout, df = 4)` (keep `absences` linear, as in the OLS
+   learner). Score it with `cv_one()` and compare with the four values in
+   `cv_tab`. Does it beat the plain linear model?
 
-1. Add a fifth entry to the `learners` list that wraps `goout` in a natural
-   spline --- `ns(goout, df = 4)` --- while keeping `absences` linear (start
-   from the OLS learner and edit its formula).
-2. Score it with `cv_one()` (the same folds are reused automatically) and place
-   its CV RMSE next to the four values in `cv_tab`.
-3. Does the extra spline beat the plain linear model, and is that consistent
-   with what the descriptive plots said about `goout`?
+2. **The price of extra flexibility.** In the natural-spline learner, change
+   `ns(absences, df = 4)` to `df = 8` and re-run `cv_one()`. Does doubling the
+   basis size improve or worsen held-out RMSE?
+
+3. **Odds ratios.** Add `goout` to the pass/fail logistic regression and
+   report `exp(coef(...))` for it, with a one-sentence interpretation of the
+   odds ratio.

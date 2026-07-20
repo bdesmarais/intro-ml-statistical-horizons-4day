@@ -840,13 +840,16 @@ match the full logit's accuracy while cutting the model to a third of its size**
 a win for parsimony and stability rather than for raw prediction, which is exactly
 the right expectation when the signal is low-dimensional.
 
-# Independent exercise (about 10 minutes)
+# Independent exercises (each about 10 minutes)
 
-In the held-out comparison the lasso is scored at `lambda.1se` while ridge and
-the elastic net are scored at `lambda.min`.
+1. **The 1-SE rule out of sample.** In the `oos` chunk, re-score the elastic
+   net at `s = "lambda.1se"` and compare its AUC and PR-AUC with the
+   `lambda.min` version.
 
-1. Re-score the elastic net at `s = "lambda.1se"` in the `oos` chunk and
-   compare its AUC and PR-AUC with the `lambda.min` version.
-2. Count the predictors the 1-SE elastic net retains (mirror the keep-table
-   chunk) and compare with the `lambda.min` support. On these data, what does
-   the 1-SE rule buy, and what does it cost?
+2. **What the simpler model keeps.** Count the predictors the 1-SE elastic net
+   retains (mirror the keep-table chunk) and compare with the `lambda.min`
+   support. What does the 1-SE rule buy, and what does it cost, here?
+
+3. **Sensitivity to the penalty mix.** Re-run the elastic-net line of the
+   `oos` chunk with `alpha = 0.25` and `alpha = 0.75` instead of `best_alpha`.
+   How sensitive is held-out AUC to the ridge/lasso mix on these data?

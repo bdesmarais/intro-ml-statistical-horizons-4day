@@ -761,15 +761,17 @@ Day 1's toolkit, demonstrated end to end on the reproduced trust model:
   polynomial model and beats the baseline: the paper's explanatory model is also a
   sound predictive one, and its low overfitting risk is *why* its inference holds up.
 
-# Independent exercise (about 10 minutes)
+# Independent exercises (each about 10 minutes)
 
-The final comparison showed the reproduced OLS captures close to all the
-predictable signal in these six variables. Find out how much of it one control
-carries:
+1. **How much work does one control do?** Refit the reproduced specification
+   *without* `Education`, reusing the same `folds` (copy the loop from the
+   final-comparison chunk and edit the formula). Compare its out-of-fold RMSE
+   with `cv_rmse_ols` and the mean baseline in `final_tab`.
 
-1. Refit the reproduced specification *without* `Education`, reusing the same
-   `folds`: copy the loop from the final-comparison chunk and edit the formula.
-2. Compare the new out-of-fold RMSE and $R^2$ with `cv_rmse_ols` and the mean
-   baseline in `final_tab`. Does dropping the strongest control move the model
-   noticeably toward the baseline, or is the Tiananmen-cohort signal doing the
-   work on its own?
+2. **The headline variable alone.** Add a `TrustCent ~ T` row to the same
+   comparison. How much of the six-variable model's edge over the baseline
+   does the Tiananmen-cohort indicator deliver by itself?
+
+3. **CV design.** Set `K <- 5`, redraw `folds`, and recompute `cv_rmse_ols`.
+   How much does the CV estimate move, and why would you expect 5-fold and
+   10-fold CV to disagree only slightly on n of this size?
