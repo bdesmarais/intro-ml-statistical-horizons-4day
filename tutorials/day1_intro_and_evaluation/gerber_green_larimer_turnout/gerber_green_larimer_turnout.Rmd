@@ -869,12 +869,13 @@ is the most important habit this course teaches.
    and `auc_of()`. Which direction do the scores move relative to the
    household-split table, and why is the household split the honest one?
 
-2. **Logit vs. the linear probability model.** Refit the Table 3(a)
-   specification as a logit: `glm(voted ~ treatment, ggl, family = binomial)`.
-   Using `predict(..., type = "response")`, compute the average predicted
-   probability of voting in the Neighbors group and in the Control group. How
-   close is the difference to the OLS coefficient of .081, and why do the two
-   models agree so well here?
+2. **Grid search vs. random search.** The validation curve above is an
+   *exhaustive grid search* over all 14 age-polynomial degrees; the slides
+   contrast this with *random search* under a smaller budget. Using the
+   already-computed `vc` table, simulate a random search that evaluates only 4
+   degrees: `min(vc$CV[vc$degree %in% sample(vc$degree, 4)])`. Repeat it 20
+   times with `replicate()`. How often does the 4-draw search land within one
+   standard error of the exhaustive minimum?
 
 3. **Accuracy vs. the base rate.** Using the full model's test-set predictions
    `p_fu`, compute classification accuracy at a 0.5 threshold, and compare it

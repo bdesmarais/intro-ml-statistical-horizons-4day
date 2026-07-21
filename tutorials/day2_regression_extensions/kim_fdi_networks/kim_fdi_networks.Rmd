@@ -899,6 +899,9 @@ intact.
    line and re-run the `cv` chunk. Does held-out RMSE improve on the reported
    GAM?
 
-3. **Unpenalized flexibility.** Edit `f_poly` from `poly(Firm_Size, 3)` to
-   degree 5 and re-run the CV chunk. What happens to the polynomial's held-out
-   RMSE, and why does the GAM not suffer the same way?
+3. **Residual plots as a functional-form check.** The slides stress residual
+   plots as the first diagnostic for a misspecified mean function. Plot
+   residuals against fitted values for the linear fit and for the GAM
+   (`plot(fitted(fit_lin), resid(fit_lin))`; same for `fit_gam`). Does the
+   curvature visible in the linear model's residuals disappear once firm size
+   enters as a smooth?

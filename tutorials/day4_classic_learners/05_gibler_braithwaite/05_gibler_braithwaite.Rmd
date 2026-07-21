@@ -456,6 +456,9 @@ SHAP reads the drivers back out — extending the regression-to-ML result to *in
    the tuned `best_rf$mtry`) and recompute its test AUC-PR with `aucpr()`.
    Does the ranking of the learners change?
 
-3. **Thresholds under rare events.** Using the XGBoost test-set predictions,
-   compute precision and recall at thresholds 0.5 and 0.1. Why is 0.5 a poor
-   default when fatal disputes are ~1% of cases?
+3. **Tree depth and interactions.** The slides explain that boosted trees
+   capture interactions through depth. Refit XGBoost with `max_depth = 1`
+   (stumps --- no interactions possible), keeping the other tuned settings and
+   `nrounds = best$nrounds`, and recompute test AUC-PR with `aucpr()`. How
+   much of the boosting gain over the logit disappears when interactions are
+   ruled out?
