@@ -715,12 +715,14 @@ ggplot(plt, aes(Model, RMSE)) +
   theme_bw(base_size = 10)
 ```
 
-The best learner on this test set is **`r best_model`**. As in Days 1--3, the gains
-over a well-specified OLS are modest here: with only six predictors and a mostly linear
-signal there is little nonlinear structure for the flexible learners to exploit, and the
-linear SVM tracks OLS closely by construction. Where a tree-ensemble edges ahead, it
-does so by capturing curvature (notably in `years_lived`) that the additive linear model
-assumes away --- which the next section makes explicit.
+The best learner on this test set is **`r best_model`**. Four of the six flexible
+learners beat the reproduced OLS --- the random forest by about 7\% of RMSE
+(out-of-sample $R^2$ 0.28 vs. 0.17), then boosting, k-NN, and the RBF SVM by smaller
+margins --- while the single tree and the linear SVM land at or below the baseline
+(the linear SVM tracks OLS closely by construction). The gains are moderate in RMSE
+terms but consistent across the flexible learners, and they come from a specific
+place: curvature (notably in `years_lived`) that the additive linear model assumes
+away --- which the next section makes explicit.
 
 # Interpretation: permutation importance + partial dependence
 
@@ -779,10 +781,11 @@ predictors through the full stable of classic learners --- an interpretable `rpa
 tree, a `ranger` random forest, `xgboost` boosting, RBF- and linear-kernel SVMs, and
 CV-tuned k-NN --- shows how each learner reaches a prediction differently, yet all plug
 into one train/test protocol and one scoreboard. On this low-dimensional design the
-predictive gains over a well-specified OLS are small, and that *is* the Day-4 lesson:
-the flexible learners help precisely where the linear model's **functional form** is
-wrong (the nonlinear `years_lived` effect the partial-dependence plot exposes), and add
-little where it is right. Interpretation tools --- permutation importance and partial
+predictive gains over a well-specified OLS are moderate --- the forest trims RMSE by
+about 7\% and lifts out-of-sample $R^2$ from 0.17 to 0.28 --- and that *is* the Day-4
+lesson: the flexible learners help precisely where the linear model's **functional
+form** is wrong (the nonlinear `years_lived` effect the partial-dependence plot
+exposes), and add little where it is right. Interpretation tools --- permutation importance and partial
 dependence --- let us see that structure rather than take the ensemble's word for it.
 
 # Independent exercises (each about 10 minutes)

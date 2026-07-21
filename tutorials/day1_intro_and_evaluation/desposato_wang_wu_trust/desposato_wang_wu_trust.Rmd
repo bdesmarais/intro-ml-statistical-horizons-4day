@@ -489,9 +489,13 @@ split_tab <- data.frame(
 knitr::kable(split_tab, caption = "Single 70/30 train/test split, OLS. The held-out RMSE is the honest estimate of prediction error.")
 ```
 
-The in-sample RMSE understates error; the **held-out RMSE is the number to trust**.
-But a single split wastes 30% of the data and its estimate wobbles depending on which
-respondents happened to land in the test set. Cross-validation fixes both.
+The held-out RMSE is the honest estimate --- but notice what happened on this draw:
+the test RMSE (`r round(te_rmse,3)`) came out *below* the training RMSE
+(`r round(tr_rmse,3)`). That is not a paradox; it is the noise of a single split.
+With only `r nrow(test)` test respondents, which rows happen to land in the test set
+moves the estimate substantially, and on a lucky draw the test set is simply easier
+to predict than the training data. A single split is honest but wobbly --- and it
+wastes 30% of the data. Cross-validation fixes both.
 
 ## $k$-fold cross-validation (folds written out explicitly)
 
@@ -516,10 +520,14 @@ cv_rmse_ols <- rmse(d$TrustCent, cv_ols_pred)
 cat("10-fold CV RMSE (OLS):", round(cv_rmse_ols, 3), "\n")
 ```
 
-We now have three numbers for the *same* OLS model: an over-optimistic in-sample
-RMSE of `r round(insamp,3)`, a single-split held-out RMSE of `r round(te_rmse,3)`,
-and a stable 10-fold CV RMSE of `r round(cv_rmse_ols,3)`. The gap between the first
-and the last is the **optimism** we would have paid for by trusting in-sample fit.
+We now have three numbers for the *same* OLS model: an in-sample RMSE of
+`r round(insamp,3)`, a single-split held-out RMSE of `r round(te_rmse,3)`, and a
+stable 10-fold CV RMSE of `r round(cv_rmse_ols,3)`. The comparison that measures
+**optimism** is in-sample vs. CV: the in-sample number is lower, but only slightly
+--- a six-predictor linear model has little capacity to flatter itself. The
+single-split estimate, by contrast, landed *below both*; that is sampling noise, not
+evidence that unseen data are easier to predict, and it is exactly why the pooled CV
+estimate --- not any single split --- is the number to report.
 
 ## The bias--variance tradeoff: a validation curve
 
@@ -746,7 +754,10 @@ Day 1's toolkit, demonstrated end to end on the reproduced trust model:
   $\beta_T = -0.511$; we re-asked how well the same model *predicts unseen
   respondents*.
 - **In-sample optimism.** In-sample RMSE `r round(insamp,3)` vs. honest CV RMSE
-  `r round(cv_rmse_ols,3)` --- the optimism gap made explicit.
+  `r round(cv_rmse_ols,3)` --- a small gap, as a rigid six-predictor linear model
+  should show; the noisier single-split estimate (`r round(te_rmse,3)`) landed on
+  the *other side* of the in-sample number, an object lesson in why we average over
+  folds instead of trusting one split.
 - **Data splitting.** A single 70/30 split, then explicit 10-fold CV with the fold
   sizes printed.
 - **Bias--variance.** A polynomial-degree validation curve: training error falls

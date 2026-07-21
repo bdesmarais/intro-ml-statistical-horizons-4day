@@ -674,7 +674,8 @@ ggplot(pdp, aes(x, phat)) + geom_line(color = "firebrick", linewidth = 1) +
 The published logistic model reproduces **exactly** (Table 4 odds ratios matched to three
 decimals), anchoring the ML extension in a trustworthy baseline. On this small n $=$ `r nrow(dat)`
 cohort the classic learners — tree, random forest, xgboost, SVM (RBF/linear), and CV-tuned k-NN —
-**do not reliably beat the logistic GLM** out-of-sample; the strongest signal (admission oxygen
+**do not reliably beat the logistic GLM** out-of-sample --- indeed the logistic posts
+the highest mean ROC-AUC of all seven models; the strongest signal (admission oxygen
 requirement) is close to linear on the log-odds scale, so flexible boundaries mostly add variance.
 What ML *does* add here is confirmatory interpretation: permutation importance and the
 partial-dependence curves independently rank supplemental O$_2$ (then the comorbidity flags) as the

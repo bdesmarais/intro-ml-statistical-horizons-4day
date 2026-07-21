@@ -856,7 +856,7 @@ kable(cv_tab, booktabs = TRUE,
       caption = sprintf("Out-of-sample prediction (10-fold CV), continuous FDI outcome. All models share the model-4 controls; only the firm-size term differs. Naive mean-only baseline RMSE = %.3f. Lower RMSE / higher R2 is better.", baseline_rmse))
 ```
 
-```{r cv-plot, fig.width=6.5, fig.height=3.2, fig.cap="Cross-validated RMSE by mean function. Moving from a straight line to a spline or GAM in firm size lowers held-out error; the extra flexibility of the B-spline/poly is not free once cross-validated."}
+```{r cv-plot, fig.width=6.5, fig.height=3.2, fig.cap="Cross-validated RMSE by mean function. Moving from a straight line to a natural spline or GAM in firm size lowers held-out error. The cubic polynomial and high-df B-spline collapse out of sample (large negative CV R-squared): global or unpenalized bases fitted on a training fold extrapolate wildly at test points near and beyond that fold's firm-size range. Note also that the linear-in-size model trails even the mean-only baseline."}
 cv_plot <- cv_tab
 cv_plot$`Mean function` <- factor(cv_plot$`Mean function`, levels = rev(models))
 ggplot(cv_plot, aes(`Mean function`, `CV RMSE`)) +
@@ -882,9 +882,13 @@ coefficient's apparent role, and that the paper's result lives on the FDI amount
 The core Day-2 lesson is about **functional form**. A partial-$F$ test rejects the linear
 firm-size term in favour of a cubic; a `mgcv::gam` smooth has effective df well above 1 and
 is significant; and the natural-spline and GAM curves in the fitted-curve figure bend where
-the straight line cannot. Crucially, cross-validation keeps this honest: the spline and GAM
-lower held-out RMSE relative to the linear term, whereas piling on unpenalized flexibility
-(high-df B-spline, cubic poly) can *hurt* out of sample. Flexible regression sharpens the
+the straight line cannot. Crucially, cross-validation keeps this honest: the natural spline and GAM
+lower held-out RMSE relative to the linear term, whereas the unpenalized cubic polynomial and
+high-df B-spline fail catastrophically out of sample (CV $R^2$ below $-20$) --- an extrapolation
+failure of global, unpenalized bases at the edges of the firm-size range, and the clearest
+argument in this tutorial for local spline bases and penalized smooths. The linear-in-size model
+even trails the mean-only baseline out of sample (CV $R^2 = -0.03$), so getting the functional
+form right is not cosmetic here. Flexible regression sharpens the
 firm-size relationship's shape while leaving the sign and substance of the paper's argument
 intact.
 

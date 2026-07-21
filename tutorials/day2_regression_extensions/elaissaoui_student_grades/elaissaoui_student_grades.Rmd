@@ -708,7 +708,7 @@ The four flexible fits all look plausible in-sample, but added flexibility alway
 error --- the honest test is **held-out** error. We score linear, polynomial (degree 3), natural
 spline, and GAM under one **10-fold cross-validation**, refitting each model inside every fold.
 
-```{r cv-compare, fig.cap="10-fold CV RMSE (lower is better) for the four regression extensions on G3. Bars near-identical: with these weak, near-linear predictors, the flexible models do not beat the straight line out of sample."}
+```{r cv-compare, fig.cap="10-fold CV RMSE (lower is better) for the four regression extensions on G3. The natural spline and GAM sit a few percent below the straight line; the unpenalized cubic polynomial does worst."}
 K <- 10
 set.seed(20240501)
 folds <- sample(rep(1:K, length.out = nrow(dat)))
@@ -761,13 +761,15 @@ ggplot(cv_tab, aes(reorder(model, cv_rmse), cv_rmse)) +
   theme(axis.text.x = element_text(angle = 20, hjust = 1))
 ```
 
-The four held-out RMSEs are **within a hair of one another**, and the plain linear fit is right in
-the pack (typically the best or tied-best). This is the central Day-2 lesson made concrete: the
-extensions --- polynomials, splines, GAMs --- are the right tools *when the response genuinely curves*,
-but here the descriptives told us `absences` relates to `G3` almost linearly, the GAM's own
-GCV chose a near-straight smooth, and so the flexible models spend their extra degrees of freedom
-fitting noise that does not generalize. **Reach for a spline or GAM when a residual plot or a domain
-argument says the relationship bends --- not by default.**
+The held-out ranking is: natural spline first, GAM second, the plain linear fit third, and the
+degree-3 polynomial last. The ordering carries the central Day-2 lesson twice over. First, `absences`
+has enough curvature that *disciplined* flexibility --- a natural spline with modest df, or a
+penalized GAM smooth --- buys a real but modest out-of-sample improvement (about 3--4\% of RMSE
+over the linear fit). Second, the same flexibility spent on an unpenalized global polynomial *costs*
+accuracy: it lands behind even the straight line. Flexibility pays when it is local or penalized and
+aimed at genuine curvature; it hurts when it is global and unpenalized. **Reach for a spline or GAM
+when a residual plot or a domain argument says the relationship bends --- and prefer them to raw
+polynomials when you do.**
 
 # Takeaway
 
@@ -780,9 +782,10 @@ zero-inflated lower tail; (ii) swapped the Gaussian likelihood for a Bernoulli o
 regression on a pass/fail label --- and used it to explain the MLE, log-odds/odds-ratios, and
 deviance; (iii) bent `absences` with polynomials, natural/B-splines, and an mgcv GAM smooth, plotting
 each fitted curve; and (iv) compared all four under one 10-fold cross-validation. The honest verdict:
-these five demographic/behavioral predictors relate to the grade almost linearly, so the flexible
-extensions match --- but do not beat --- the simple published regression out of sample. The tools
-matter; knowing *when* the data warrant them, from diagnostics and held-out error, matters more.
+the natural spline and the GAM edge out the published linear specification out of sample (roughly
+3--4\% lower CV RMSE) by capturing mild curvature in `absences`, while the unpenalized cubic
+polynomial falls behind the straight line. The tools matter; knowing *when* the data warrant them
+--- and which forms of flexibility are disciplined enough to generalize --- matters more.
 
 # Independent exercises (each about 10 minutes)
 

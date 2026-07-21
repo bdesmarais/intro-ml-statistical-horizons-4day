@@ -808,7 +808,7 @@ knitr::kable(keep_tab, row.names = FALSE, align = "lccccc",
 ```
 
 Out of sample, the five models are **statistically indistinguishable** in ROC-AUC
-and PR-AUC --- all cluster near AUC $\approx 0.75$ against a $`r sprintf("%.3f", base_rate)`$
+and PR-AUC --- all cluster in a narrow band (ROC-AUC 0.76--0.78) against a $`r sprintf("%.3f", base_rate)`$
 base-rate PR floor. This is the honest and important Day-3 lesson: **when the true
 signal is low-dimensional and the predictors are mostly binary/ordinal,
 regularization does not buy predictive accuracy** --- there is little estimation
