@@ -871,9 +871,10 @@ is the most important habit this course teaches.
 
 2. **Logit vs. the linear probability model.** Refit the Table 3(a)
    specification as a logit: `glm(voted ~ treatment, ggl, family = binomial)`.
-   Compute the average marginal effect of Neighbors (mean difference in
-   predicted probabilities, everyone set to Neighbors vs. Control). How close
-   is it to the OLS coefficient of .081?
+   Using `predict(..., type = "response")`, compute the average predicted
+   probability of voting in the Neighbors group and in the Control group. How
+   close is the difference to the OLS coefficient of .081, and why do the two
+   models agree so well here?
 
 3. **Accuracy vs. the base rate.** Using the full model's test-set predictions
    `p_fu`, compute classification accuracy at a 0.5 threshold, and compare it
