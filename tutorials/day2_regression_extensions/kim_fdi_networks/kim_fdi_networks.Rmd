@@ -813,56 +813,96 @@ FDI–size relationship genuinely curves.
 
 # Out-of-sample comparison of all extensions
 
-In-sample fit always improves with flexibility, so the honest test is held-out prediction.
-Under a common 10-fold cross-validation we score each mean function by out-of-sample RMSE
-and $R^2$ on the continuous FDI outcome. All five share the identical control set; they
-differ only in how firm size enters.
+In-sample fit always improves with flexibility, so the honest test is held-out
+prediction. We follow the standard protocol: **split** the firms 70/30 into training
+and test sets; use 10-fold CV **on the training set only** to choose the
+natural-spline df for firm size and to rank the five mean functions; then fit each
+final model on the full training set and compare them **once** on the test set. All
+five share the identical control set; they differ only in how firm size enters.
 
-```{r cv}
+```{r split-tune-kim}
 rmse <- function(a, b) sqrt(mean((a - b)^2))
 r2   <- function(a, b) 1 - sum((a - b)^2) / sum((a - mean(a))^2)
 
-K <- 10
-folds <- sample(rep(1:K, length.out = nrow(md)))
-models <- c("Linear", "Polynomial", "NatSpline", "BSpline", "GAM")
-preds  <- matrix(NA, nrow(md), length(models), dimnames = list(NULL, models))
+set.seed(2024)
+tr_i <- sample(nrow(md), floor(0.70 * nrow(md)))
+mtr <- md[tr_i, ]; mte <- md[-tr_i, ]
 
+K <- 10
+folds <- sample(rep(1:K, length.out = nrow(mtr)))
+
+# CV on the TRAINING set only: choose the natural-spline df for firm size
+df_grid <- 3:8
+cv_df <- sapply(df_grid, function(dof) {
+  f_ <- as.formula(paste0("FDIProjects_Amount ~ ns(Firm_Size, df = ", dof, ")", ctrl))
+  rm <- numeric(K)
+  for (k in 1:K) {
+    fit <- lm(f_, data = mtr[folds != k, ])
+    rm[k] <- rmse(mtr$FDIProjects_Amount[folds == k], predict(fit, mtr[folds == k, ]))
+  }
+  mean(rm)
+})
+best_df_ns <- df_grid[which.min(cv_df)]
+f_ns_cv <- as.formula(paste0("FDIProjects_Amount ~ ns(Firm_Size, df = ", best_df_ns, ")", ctrl))
+knitr::kable(data.frame(df = df_grid, cv_rmse = round(cv_df, 4)), row.names = FALSE,
+  caption = sprintf("10-fold CV RMSE on the training set by natural-spline df for firm size. CV chooses df = %d.", best_df_ns))
+```
+
+```{r cv-train-kim}
+# CV on the TRAINING set ranks the five mean functions; the test set is untouched
+models <- c("Linear", "Polynomial", "NatSpline", "BSpline", "GAM")
+cv_preds <- matrix(NA, nrow(mtr), length(models), dimnames = list(NULL, models))
 for (k in 1:K) {
-  tr <- folds != k; te <- folds == k
-  dtr <- md[tr, ]; dte <- md[te, ]
-  preds[te, "Linear"]     <- predict(lm(f_lin,  data = dtr), newdata = dte)
-  preds[te, "Polynomial"] <- predict(lm(f_poly, data = dtr), newdata = dte)
-  # ns/bs basis pinned to the TRAINING range so test points map through the same basis
-  preds[te, "NatSpline"]  <- predict(lm(f_ns, data = dtr), newdata = dte)
-  preds[te, "BSpline"]    <- predict(lm(f_bs, data = dtr), newdata = dte)
+  trn <- folds != k; tst <- folds == k
+  dtr <- mtr[trn, ]; dte <- mtr[tst, ]
+  cv_preds[tst, "Linear"]     <- predict(lm(f_lin,   data = dtr), newdata = dte)
+  cv_preds[tst, "Polynomial"] <- predict(lm(f_poly,  data = dtr), newdata = dte)
+  cv_preds[tst, "NatSpline"]  <- predict(lm(f_ns_cv, data = dtr), newdata = dte)
+  cv_preds[tst, "BSpline"]    <- predict(lm(f_bs,    data = dtr), newdata = dte)
   gtr <- gam(FDIProjects_Amount ~ s(Firm_Size) + Board_Ties_to_State_Banks +
                Debt_Ratio + Profitability + Chaebol + factor(sic_category),
              data = dtr, method = "REML")
-  preds[te, "GAM"] <- predict(gtr, newdata = dte)
+  cv_preds[tst, "GAM"] <- predict(gtr, newdata = dte)
 }
-
-baseline_rmse <- rmse(md$FDIProjects_Amount, rep(mean(md$FDIProjects_Amount), nrow(md)))
-
 cv_tab <- data.frame(
   `Mean function` = models,
-  `CV RMSE` = round(apply(preds, 2, function(p) rmse(md$FDIProjects_Amount, p)), 3),
-  `CV R2`   = round(apply(preds, 2, function(p) r2(md$FDIProjects_Amount, p)), 3),
-  check.names = FALSE, row.names = NULL
-)
+  `Train CV RMSE` = round(apply(cv_preds, 2, function(p) rmse(mtr$FDIProjects_Amount, p)), 3),
+  check.names = FALSE, row.names = NULL)
+knitr::kable(cv_tab, booktabs = TRUE,
+  caption = "Model selection: 10-fold CV on the training set only.")
+```
+
+```{r final-test-kim}
+fit_te <- list(
+  Linear     = lm(f_lin,   data = mtr),
+  Polynomial = lm(f_poly,  data = mtr),
+  NatSpline  = lm(f_ns_cv, data = mtr),
+  BSpline    = lm(f_bs,    data = mtr),
+  GAM        = gam(FDIProjects_Amount ~ s(Firm_Size) + Board_Ties_to_State_Banks +
+                     Debt_Ratio + Profitability + Chaebol + factor(sic_category),
+                   data = mtr, method = "REML"))
+test_pred <- sapply(fit_te, function(m) as.numeric(predict(m, newdata = mte)))
+te_rmse <- apply(test_pred, 2, function(p) rmse(mte$FDIProjects_Amount, p))
+te_r2   <- apply(test_pred, 2, function(p) r2(mte$FDIProjects_Amount, p))
+baseline_rmse <- rmse(mte$FDIProjects_Amount, rep(mean(mtr$FDIProjects_Amount), nrow(mte)))
+test_tab <- data.frame(`Mean function` = models,
+                       `Test RMSE` = round(te_rmse, 3),
+                       `Test R2`   = round(te_r2, 3),
+                       check.names = FALSE, row.names = NULL)
 ```
 
 ```{r cv-table, results='asis'}
-kable(cv_tab, booktabs = TRUE,
-      caption = sprintf("Out-of-sample prediction (10-fold CV), continuous FDI outcome. All models share the model-4 controls; only the firm-size term differs. Naive mean-only baseline RMSE = %.3f. Lower RMSE / higher R2 is better.", baseline_rmse))
+kable(test_tab, booktabs = TRUE,
+      caption = sprintf("Final comparison on the held-out test set (models fit on the training set; every tuning decision made by CV within the training set). Naive mean-only baseline RMSE = %.3f.", baseline_rmse))
 ```
 
-```{r cv-plot, fig.width=6.5, fig.height=3.2, fig.cap="Cross-validated RMSE by mean function. Moving from a straight line to a natural spline or GAM in firm size lowers held-out error. The cubic polynomial and high-df B-spline collapse out of sample (large negative CV R-squared): global or unpenalized bases fitted on a training fold extrapolate wildly at test points near and beyond that fold's firm-size range. Note also that the linear-in-size model trails even the mean-only baseline."}
-cv_plot <- cv_tab
+```{r cv-plot, fig.width=6.5, fig.height=3.2, fig.cap="Held-out test-set RMSE by mean function (dashed = mean-only baseline). Global unpenalized bases (cubic polynomial, high-df B-spline) can extrapolate wildly at test firms outside the training range of firm size."}
+cv_plot <- test_tab
 cv_plot$`Mean function` <- factor(cv_plot$`Mean function`, levels = rev(models))
-ggplot(cv_plot, aes(`Mean function`, `CV RMSE`)) +
+ggplot(cv_plot, aes(`Mean function`, `Test RMSE`)) +
   geom_col(fill = "grey30") + coord_flip() +
   geom_hline(yintercept = baseline_rmse, linetype = "dashed", colour = "grey50") +
-  labs(x = NULL, y = "10-fold CV RMSE (dashed = mean-only baseline)") +
+  labs(x = NULL, y = "Test-set RMSE (dashed = mean-only baseline)") +
   theme_minimal(base_size = 11)
 ```
 
@@ -882,13 +922,17 @@ coefficient's apparent role, and that the paper's result lives on the FDI amount
 The core Day-2 lesson is about **functional form**. A partial-$F$ test rejects the linear
 firm-size term in favour of a cubic; a `mgcv::gam` smooth has effective df well above 1 and
 is significant; and the natural-spline and GAM curves in the fitted-curve figure bend where
-the straight line cannot. Crucially, cross-validation keeps this honest: the natural spline and GAM
-lower held-out RMSE relative to the linear term, whereas the unpenalized cubic polynomial and
-high-df B-spline fail catastrophically out of sample (CV $R^2$ below $-20$) --- an extrapolation
-failure of global, unpenalized bases at the edges of the firm-size range, and the clearest
-argument in this tutorial for local spline bases and penalized smooths. The linear-in-size model
-even trails the mean-only baseline out of sample (CV $R^2 = -0.03$), so getting the functional
-form right is not cosmetic here. Flexible regression sharpens the
+the straight line cannot. Crucially, the split-tune-test protocol keeps this honest: every tuning decision (the
+spline df, the ranking of mean functions) was made by CV inside the training set, and the test
+set was scored once. On it, the natural spline and GAM
+`r ifelse(max(te_rmse["NatSpline"], te_rmse["GAM"]) < te_rmse["Linear"], "lower test RMSE relative to the linear term", "run close to the linear term")`,
+whereas the unpenalized cubic polynomial and high-df B-spline
+`r ifelse(min(te_r2["Polynomial"], te_r2["BSpline"]) < 0, sprintf("fail outright on the test set (test $R^2$ of %.1f and %.1f)", te_r2["Polynomial"], te_r2["BSpline"]), "give up part of the spline's gain")`
+--- when they fail, it is an extrapolation failure of global, unpenalized bases at the edges of
+the firm-size range, and the clearest argument in this tutorial for local spline bases and
+penalized smooths. The linear-in-size model
+`r ifelse(te_r2["Linear"] < 0, "even trails the mean-only baseline on the test set", sprintf("posts test $R^2$ = %.2f", te_r2["Linear"]))`,
+so getting the functional form right is not cosmetic here. Flexible regression sharpens the
 firm-size relationship's shape while leaving the sign and substance of the paper's argument
 intact.
 
@@ -899,9 +943,9 @@ intact.
    effective df of the new smooth, and is it distinguishable from a straight
    line?
 
-2. **Does it generalize?** Swap the two-smooth formula into the CV loop's GAM
-   line and re-run the `cv` chunk. Does held-out RMSE improve on the reported
-   GAM?
+2. **Does it generalize?** Swap the two-smooth formula into the GAM lines of the
+   CV-on-train and final-test chunks and re-run them. Does test RMSE improve on
+   the reported GAM?
 
 3. **Residual plots as a functional-form check.** The slides stress residual
    plots as the first diagnostic for a misspecified mean function. Plot

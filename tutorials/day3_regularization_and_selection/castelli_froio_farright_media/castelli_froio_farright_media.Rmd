@@ -741,8 +741,8 @@ where the action is here.
 
 Finally we hold out data and compare, on a common test set, the unpenalized
 **logit** against **ridge / lasso / elastic net / abess**. We use a 70/30 stratified
-split; each penalized model re-tunes its $\lambda$ (and the elastic net uses the
-tuned $\alpha$) on the training fold only, and abess re-selects its support on the
+split; each penalized model re-tunes its $\lambda$ on the training fold only (and the
+elastic net re-tunes its $\alpha$ there too), and abess re-selects its support on the
 training fold only. We report **ROC-AUC** and **PR-AUC** (average precision) on the
 held-out 30%.
 
@@ -762,7 +762,13 @@ p_ridge <- as.numeric(predict(cv.glmnet(Xtr,ytr,family="binomial",alpha=0),
                               Xte, s="lambda.min", type="response"))
 cvl_tr  <- cv.glmnet(Xtr, ytr, family="binomial", alpha=1)
 p_lasso <- as.numeric(predict(cvl_tr, Xte, s="lambda.1se", type="response"))
-p_enet  <- as.numeric(predict(cv.glmnet(Xtr,ytr,family="binomial",alpha=best_alpha),
+## alpha re-tuned on the TRAINING fold only (same grid as above), so the test
+## set plays no role in any hyperparameter choice
+fid_tr        <- sample(rep(1:10, length.out = length(ytr)))
+alpha_cvm_tr  <- sapply(alphas, function(a) min(cv.glmnet(Xtr, ytr,
+                    family="binomial", alpha=a, foldid=fid_tr)$cvm))
+best_alpha_tr <- alphas[which.min(alpha_cvm_tr)]
+p_enet  <- as.numeric(predict(cv.glmnet(Xtr,ytr,family="binomial",alpha=best_alpha_tr),
                               Xte, s="lambda.min", type="response"))
 ## abess (support re-selected on training fold)
 ab_tr   <- abess(Xtr, ytr, family="binomial", tune.type="cv", nfolds=10)
@@ -851,5 +857,5 @@ the right expectation when the signal is low-dimensional.
    support. What does the 1-SE rule buy, and what does it cost, here?
 
 3. **Sensitivity to the penalty mix.** Re-run the elastic-net line of the
-   `oos` chunk with `alpha = 0.25` and `alpha = 0.75` instead of `best_alpha`.
+   `oos` chunk with `alpha = 0.25` and `alpha = 0.75` instead of `best_alpha_tr`.
    How sensitive is held-out AUC to the ridge/lasso mix on these data?

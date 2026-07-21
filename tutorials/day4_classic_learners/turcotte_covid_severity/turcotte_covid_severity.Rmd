@@ -457,9 +457,9 @@ pr_auc  <- function(truth01, prob) {          # area under precision-recall curv
 }
 ```
 
-To make full use of the small sample we score each learner over **repeated stratified
-train/test splits** (70/30, 40 repeats) and average the held-out ROC-AUC and PR-AUC. First we
-illustrate each learner on a single split, then run the full comparison.
+We follow the standard protocol: one **stratified 70/30 train/test split**, every
+hyperparameter chosen by **cross-validation on the training set only** (the SVM's cost and
+gamma, k-NN's k), and one final comparison of all learners on the untouched test set.
 
 ```{r one-split}
 set.seed(11)
@@ -543,20 +543,21 @@ cat("CV-chosen SVM-RBF (cost, gamma):",
 
 ## k-nearest neighbours with k chosen by cross-validation
 
-```{r knn-cv, fig.cap="k-NN validation curve: 5-fold CV ROC-AUC vs. number of neighbours k. The chosen k maximizes CV AUC."}
-# CV to choose k on standardized predictors (kknn handles distance internally)
+```{r knn-cv, fig.cap="k-NN validation curve: 5-fold CV ROC-AUC on the training set vs. number of neighbours k. The chosen k maximizes training-CV AUC; the test set is untouched."}
+# CV on the TRAINING set only to choose k (standardized by training parameters;
+# the test set plays no role in this choice)
 kgrid <- seq(3, 25, by = 2)
-folds <- sample(rep(1:5, length.out = nrow(dat)))
-scAll <- dat; scAll[c("o2L","temp")] <- scale(scAll[c("o2L","temp")])
+folds <- sample(rep(1:5, length.out = nrow(tr1)))
+scTr <- scale_train(tr1, te1, c("o2L","temp"))$tr
 cv_auc_k <- sapply(kgrid, function(k) {
-  probs <- numeric(nrow(scAll))
+  probs <- numeric(nrow(scTr))
   for (f in 1:5) {
     tri <- which(folds != f); tei <- which(folds == f)
-    m <- kknn(y ~ o2L + sputum + iddm + ckd + temp, train = scAll[tri, ], test = scAll[tei, ],
+    m <- kknn(y ~ o2L + sputum + iddm + ckd + temp, train = scTr[tri, ], test = scTr[tei, ],
               k = k, kernel = "rectangular")
     probs[tei] <- m$prob[, "yes"]
   }
-  roc_auc(scAll$sev, probs)
+  roc_auc(scTr$sev, probs)
 })
 best_k <- kgrid[which.max(cv_auc_k)]
 ggplot(data.frame(k = kgrid, auc = cv_auc_k), aes(k, auc)) +
@@ -567,54 +568,45 @@ ggplot(data.frame(k = kgrid, auc = cv_auc_k), aes(k, auc)) +
 cat("CV-chosen k =", best_k, "\n")
 ```
 
-## Held-out comparison of all learners + the logistic baseline
+## Final comparison on the held-out test set
+
+Every hyperparameter above was chosen on the training set alone: the SVM's cost and
+gamma by 5-fold CV, k-NN's k by 5-fold CV, and fixed declared settings for the tree,
+forest, and boosting. We now fit each final model on the full training set and score
+all of them, plus the reproduced logistic baseline, **once** on the 30\% test set.
 
 ```{r comparison}
-run_split <- function(seed) {
-  set.seed(seed)
-  pos <- which(dat$sev == 1); neg <- which(dat$sev == 0)
-  idx <- c(sample(pos, round(.7*length(pos))), sample(neg, round(.7*length(neg))))
-  tr <- dat[idx, ]; te <- dat[-idx, ]; ty <- te$sev
+sc1 <- scale_train(tr1, te1, c("o2L","temp"))
 
-  # logistic baseline
-  gl <- suppressWarnings(glm(sev ~ o2L+sputum+iddm+ckd+temp, data = tr, family = binomial))
-  p_glm <- predict(gl, te, type = "response")
-  # tree
-  tr_m <- rpart(y ~ o2L+sputum+iddm+ckd+temp, data = tr, method="class",
-                control = rpart.control(cp = 0.01, minbucket = 8))
-  p_tree <- predict(tr_m, te)[, "yes"]
-  # random forest
-  rf <- ranger(y ~ o2L+sputum+iddm+ckd+temp, data = tr, num.trees = 800,
-               probability = TRUE, min.node.size = 5)
-  p_rf <- predict(rf, te)$predictions[, "yes"]
-  # xgboost
-  xm <- xgb.train(params = xgb_params, data = xgb_prep(tr), nrounds = 60, verbose = 0)
-  p_xgb <- predict(xm, xgb_prep(te))
-  # SVMs (scaled)
-  s <- scale_train(tr, te, c("o2L","temp"))
-  sr <- svm(y~o2L+sputum+iddm+ckd+temp, data=s$tr, kernel="radial",
-            cost=tune_svm$best.parameters$cost, gamma=tune_svm$best.parameters$gamma,
-            probability=TRUE)
-  sl <- svm(y~o2L+sputum+iddm+ckd+temp, data=s$tr, kernel="linear", cost=1, probability=TRUE)
-  p_sr <- attr(predict(sr, s$te, probability=TRUE), "probabilities")[, "yes"]
-  p_sl <- attr(predict(sl, s$te, probability=TRUE), "probabilities")[, "yes"]
-  # kNN at CV-chosen k (scaled)
-  sc <- dat; sc[c("o2L","temp")] <- scale(sc[c("o2L","temp")])
-  km <- kknn(y~o2L+sputum+iddm+ckd+temp, train=sc[idx,], test=sc[-idx,],
-             k = best_k, kernel = "rectangular")
-  p_knn <- km$prob[, "yes"]
+# logistic baseline (reproduced specification)
+gl <- suppressWarnings(glm(sev ~ o2L+sputum+iddm+ckd+temp, data = tr1, family = binomial))
+p_glm <- predict(gl, te1, type = "response")
 
-  probs <- list(Logistic=p_glm, Tree=p_tree, RandomForest=p_rf, XGBoost=p_xgb,
-                `SVM-RBF`=p_sr, `SVM-linear`=p_sl, kNN=p_knn)
-  data.frame(
-    model = names(probs),
-    roc   = sapply(probs, function(p) roc_auc(ty, p)),
-    pr    = sapply(probs, function(p) pr_auc(ty, p))
-  )
-}
-res <- do.call(rbind, lapply(1:40, run_split))
-agg <- aggregate(cbind(roc, pr) ~ model, data = res, FUN = mean)
+# tree / forest / boosting fits from above, scored on the test set
+p_tree <- predict(tree, te1)[, "yes"]
+p_rf   <- rf_prob1
+p_xgb  <- xgb_prob1
+
+# SVM-RBF at the CV-chosen cost/gamma; linear kernel at C = 1
+svm_rbf_t <- svm(y ~ o2L+sputum+iddm+ckd+temp, data = sc1$tr, kernel = "radial",
+                 cost = tune_svm$best.parameters$cost,
+                 gamma = tune_svm$best.parameters$gamma, probability = TRUE)
+p_rbf_t <- attr(predict(svm_rbf_t, sc1$te, probability = TRUE), "probabilities")[, "yes"]
+p_lin_t <- p_lin
+
+# k-NN at the CV-chosen k (train-scaled)
+km <- kknn(y ~ o2L+sputum+iddm+ckd+temp, train = sc1$tr, test = sc1$te,
+           k = best_k, kernel = "rectangular")
+p_knn <- km$prob[, "yes"]
+
+probs <- list(Logistic = p_glm, Tree = p_tree, RandomForest = p_rf, XGBoost = p_xgb,
+              `SVM-RBF (tuned)` = p_rbf_t, `SVM-linear` = p_lin_t, kNN = p_knn)
+agg <- data.frame(model = names(probs),
+                  roc = sapply(probs, function(p) roc_auc(te1$sev, p)),
+                  pr  = sapply(probs, function(p) pr_auc(te1$sev, p)))
 agg <- agg[order(-agg$roc), ]
+logit_rank <- which(agg$model == "Logistic")
+logit_gap  <- round(max(agg$roc) - agg$roc[agg$model == "Logistic"], 3)
 ```
 
 ```{r comparison-table, echo=FALSE}
@@ -623,17 +615,17 @@ knitr::kable(data.frame(Model = agg$model,
                         `PR-AUC`  = round(agg$pr, 3),
                         check.names = FALSE),
              row.names = FALSE, booktabs = TRUE,
-             caption = "Held-out performance (mean over 40 stratified 70/30 splits). Base rate of severe illness ~ 0.39, so PR-AUC > 0.39 beats the no-skill line.")
+             caption = "Held-out test-set performance (single stratified 70/30 split; every hyperparameter chosen on the training set). Base rate of severe illness ~ 0.39, so PR-AUC > 0.39 beats the no-skill line.")
 ```
 
-```{r comparison-plot, echo=FALSE, fig.cap="Mean held-out ROC-AUC across 40 stratified splits. The reproduced logistic GLM is highlighted; on this small, near-linearly-structured cohort the flexible learners do not clearly beat it."}
+```{r comparison-plot, echo=FALSE, fig.cap="Held-out test-set ROC-AUC (single stratified split; all tuning on the training set only). The reproduced logistic GLM is highlighted. With n = 111 and one dominant near-linear signal, a single small test set is noisy; the ranking should be read with that in mind."}
 agg$is_base <- agg$model == "Logistic"
 ggplot(agg, aes(reorder(model, roc), roc, fill = is_base)) +
   geom_col(width = .65) +
   geom_hline(yintercept = 0.5, linetype = 3) +
   coord_flip() +
   scale_fill_manual(values = c("grey60","firebrick"), guide = "none") +
-  labs(x = NULL, y = "Mean held-out ROC-AUC",
+  labs(x = NULL, y = "Held-out ROC-AUC",
        title = "Learner comparison (baseline logistic in red)") +
   theme_minimal()
 ```
@@ -674,8 +666,9 @@ ggplot(pdp, aes(x, phat)) + geom_line(color = "firebrick", linewidth = 1) +
 The published logistic model reproduces **exactly** (Table 4 odds ratios matched to three
 decimals), anchoring the ML extension in a trustworthy baseline. On this small n $=$ `r nrow(dat)`
 cohort the classic learners — tree, random forest, xgboost, SVM (RBF/linear), and CV-tuned k-NN —
-**do not reliably beat the logistic GLM** out-of-sample --- indeed the logistic posts
-the highest mean ROC-AUC of all seven models; the strongest signal (admission oxygen
+**are not clearly better than the logistic GLM** on the held-out test set
+(`r if (logit_rank == 1) "the logistic in fact posts the highest test ROC-AUC of all seven models" else sprintf("the logistic finishes %.3f ROC-AUC behind the best flexible learner, well within what a 34-patient test set can distinguish", logit_gap)`);
+the strongest signal (admission oxygen
 requirement) is close to linear on the log-odds scale, so flexible boundaries mostly add variance.
 What ML *does* add here is confirmatory interpretation: permutation importance and the
 partial-dependence curves independently rank supplemental O$_2$ (then the comorbidity flags) as the
@@ -688,11 +681,11 @@ prediction win.
 
 1. **Why k-NN needs scaling.** Re-run the k-selection chunk with `o2L` and
    `temp` left in raw units (skip the `scale()` step) and compare the chosen
-   $k$ and ROC-AUC on one 70/30 split with the standardized version. Why does
+   $k$ and its test-set ROC-AUC with the standardized version. Why does
    raw `temp` (roughly 97--103) distort the neighbour distances?
 
 2. **Tree depth on a small n.** Refit the `rpart` tree with `cp = 0.001`
-   (deeper) and compare its ROC-AUC on one split with the `cp = 0.01` tree.
+   (deeper) and compare its test-set ROC-AUC with the `cp = 0.01` tree.
    Does the deeper tree overfit a cohort of 111?
 
 3. **Partial dependence for a binary predictor.** Use `pdp_curve()` with
