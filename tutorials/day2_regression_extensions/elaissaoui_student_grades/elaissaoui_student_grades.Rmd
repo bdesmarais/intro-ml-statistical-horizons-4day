@@ -5,8 +5,6 @@ author: "Intro to Machine Learning --- SH Day 2: Regression Extensions"
 date: "`r format(Sys.Date())`"
 output:
   pdf_document:
-    toc: true
-    toc_depth: 2
     number_sections: true
     fig_caption: true
 header-includes:
@@ -402,13 +400,11 @@ demonstrate the full Day-2 regression-extensions toolkit.
 
 Everything below uses the **same outcome (`G3`) and the same five predictors** as the reproduced OLS,
 so that every extension is anchored to the published model. Day 2 keeps the *regression* frame but
-progressively relaxes its two strongest assumptions --- **linearity in the predictors** and
-**a Gaussian, continuous response** --- and asks each time whether the extra machinery earns its
-keep out of sample. We proceed in four moves: (1) read the OLS as a fitted multiple regression and
-interrogate its residuals; (2) swap the Gaussian likelihood for a Bernoulli one (logistic regression
-and the MLE that powers it); (3) bend a single continuous predictor with polynomials, splines, and a
-GAM smooth; and (4) put linear, polynomial, spline, and GAM side by side under one honest
-cross-validation.
+progressively relaxes its strongest assumption --- **linearity in the predictors** --- and asks
+each time whether the extra machinery earns its keep out of sample. We proceed in three moves:
+(1) read the OLS as a fitted multiple regression and interrogate its residuals; (2) bend a single
+continuous predictor with polynomials, splines, and a GAM smooth; and (3) put linear, polynomial,
+spline, and GAM side by side under one honest train/test protocol.
 
 ```{r day2-libs}
 library(splines)     # ns(), bs()  -- natural & B-spline bases
@@ -503,75 +499,6 @@ Cook's-distance contour of concern (max Cook's D $=$ `r round(max(cook), 3)`, we
 $0.5$/$1$ alarm levels); a handful exceed the gentle $4/n$ rule but none is individually decisive.
 The verdict: OLS is *usable* here, but the zero-inflated lower tail is precisely the kind of
 departure that motivates the extensions below.
-
-## A logistic-regression + MLE aside
-
-OLS assumes a **continuous, Gaussian** response. A great deal of applied work instead has a
-**binary** outcome, and the natural regression there is **logistic regression**. To show the
-machinery on data we already understand, we binarize `G3` at the Portuguese pass mark of **10/20**:
-`pass = 1` if `G3 >= 10`, else `0`. This is a deliberately *constructed* label for teaching the
-method --- we are **not** claiming pass/fail is the "right" target, only using it to expose the
-likelihood.
-
-```{r logit-fit}
-dat$pass <- as.integer(dat$G3 >= 10)   # 1 = passed (G3 >= 10), 0 = failed
-cat("Pass rate:", round(mean(dat$pass), 3),
-    "  (", sum(dat$pass), "of", nrow(dat), "students )\n")
-
-fit_logit <- glm(pass ~ Medu + goout + romantic + age + schoolsup,
-                 data = dat, family = binomial(link = "logit"))
-lo <- summary(fit_logit)$coefficients
-logit_tab <- data.frame(
-  term      = rownames(lo),
-  log_odds  = round(lo[, "Estimate"], 4),
-  std_err   = round(lo[, "Std. Error"], 4),
-  odds_ratio = round(exp(lo[, "Estimate"]), 4),
-  p_value   = signif(lo[, "Pr(>|z|)"], 3))
-knitr::kable(logit_tab, row.names = FALSE,
-             caption = "Logistic regression for pass (G3 >= 10). Coefficients are on the log-odds scale; exp() gives odds ratios.")
-```
-
-**Where the coefficients come from --- maximum likelihood.** OLS has a closed-form least-squares
-solution; logistic regression does not. Instead we choose the coefficients that maximize the
-**Bernoulli likelihood** of the observed 0/1 labels,
-$$
-\ell(\beta) = \sum_{i=1}^{n} \Big[\, y_i \log p_i + (1 - y_i)\log(1 - p_i) \,\Big],
-\qquad
-p_i = \frac{1}{1 + e^{-x_i^\top \beta}},
-$$
-where $p_i$ is the model's predicted probability that student $i$ passes. `glm` finds the $\hat\beta$
-maximizing $\ell$ by iteratively reweighted least squares. The coefficients are **log-odds**: a
-one-level rise in `Medu` multiplies the *odds* of passing by
-`r round(exp(coef(fit_logit)["Medu"]), 2)` (its odds ratio), holding the rest fixed. We can read the
-optimized likelihood and the **deviance** ($-2\ell$, the logistic analogue of the residual sum of
-squares) straight off the fit:
-
-```{r logit-deviance}
-ll   <- as.numeric(logLik(fit_logit))          # maximized log-likelihood
-dev  <- fit_logit$deviance                      # residual deviance = -2*logLik
-ndev <- fit_logit$null.deviance                 # deviance of intercept-only model
-pseudo_r2 <- 1 - dev / ndev                     # McFadden-style pseudo-R^2
-cat("Maximized log-likelihood:", round(ll, 3), "\n")
-cat("Residual deviance:", round(dev, 2),
-    " (= -2 * logLik =", round(-2 * ll, 2), ")\n")
-cat("Null deviance:", round(ndev, 2),
-    " | McFadden pseudo-R^2:", round(pseudo_r2, 4), "\n")
-
-# In-sample classification at a 0.5 cutoff, vs. always-predict-majority baseline.
-phat <- predict(fit_logit, type = "response")
-acc  <- mean((phat >= 0.5) == dat$pass)
-base_acc <- max(mean(dat$pass), 1 - mean(dat$pass))
-cat("Accuracy @0.5:", round(acc, 3),
-    " | majority-class baseline:", round(base_acc, 3), "\n")
-```
-
-The **deviance** is literally $-2$ times the maximized log-likelihood; comparing the residual
-deviance (`r round(dev, 1)`) to the null deviance (`r round(ndev, 1)`) shows how much the five
-predictors improve the likelihood over an intercept-only model, summarized by a McFadden pseudo-$R^2$
-of `r round(pseudo_r2, 3)`. The same five weak predictors that gave a modest linear $R^2$ give a
-modest classifier: it clears the majority-class baseline only slightly. The lesson is the *method*,
-not the score --- changing the **likelihood** (Gaussian $\to$ Bernoulli) is what turns a linear
-regression into a logistic one, and MLE is the common engine underneath both.
 
 ## Polynomial regression on a continuous predictor
 
@@ -818,10 +745,8 @@ Mathematics grades (all six coefficients match to four decimals: intercept 17.79
 goout -0.5603, romanticyes -1.2458, age -0.4423, schoolsupyes -1.6562). Extending it into a Day-2
 regression-extensions lab, we (i) read the fit as a multiple regression and ran the full residual-
 diagnostic panel (residuals-vs-fitted, QQ, scale-location, leverage/Cook's), which exposed a
-zero-inflated lower tail; (ii) swapped the Gaussian likelihood for a Bernoulli one --- logistic
-regression on a pass/fail label --- and used it to explain the MLE, log-odds/odds-ratios, and
-deviance; (iii) bent `absences` with polynomials, natural/B-splines, and an mgcv GAM smooth, plotting
-each fitted curve; and (iv) split 70/30, chose the spline df by 10-fold CV on the training set alone, and compared
+zero-inflated lower tail; (ii) bent `absences` with polynomials, natural/B-splines, and an mgcv GAM smooth, plotting
+each fitted curve; and (iii) split 70/30, chose the spline df by 10-fold CV on the training set alone, and compared
 the final models once on the held-out test set. The honest verdict: the CV-chosen spline
 `r ifelse(ns_gap >= 0, "edges out", "does not beat")` the published linear specification on the
 test set (`r round(ns_te, 3)` vs. `r round(lin_te, 3)`), while the unpenalized cubic polynomial
@@ -840,6 +765,8 @@ tuning decision --- matters more.
    and recompute its test RMSE. Does the CV-chosen df beat the hand-picked
    `df = 8` out of sample?
 
-3. **Odds ratios.** Add `goout` to the pass/fail logistic regression and
-   report `exp(coef(...))` for it, with a one-sentence interpretation of the
-   odds ratio.
+3. **Read the smooth's complexity.** Refit the GAM learner on the full
+   training set (`gam(G3 ~ s(absences) + Medu + goout + romantic + age +
+   schoolsup, data = tr, method = "GCV.Cp")`) and look at `summary()`. What is
+   the effective df of `s(absences)`, and does it agree with the df that
+   cross-validation chose for the natural spline (`best_df`)?
