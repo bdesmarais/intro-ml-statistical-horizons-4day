@@ -54,7 +54,7 @@ Outcome: continuous (logged FDI project amount). Model type: **OLS**. Estimation
 
 **What this Day-2 tutorial does.** We keep the exact reproduction of Table 1, then treat
 the *same outcome* with the full toolkit of regression extensions: multiple-regression
-interpretation, the complete residual-diagnostic suite, a logistic-regression / MLE aside,
+interpretation, the complete residual-diagnostic suite,
 and a sequence of increasingly flexible mean functions in one key predictor
 (polynomial $\to$ spline $\to$ GAM), all compared honestly out of sample. This study is an
 ideal vehicle because firm size has a strongly **nonlinear** relationship to FDI that a
@@ -634,77 +634,6 @@ kable(hc, booktabs = TRUE,
       caption = "Classical vs. heteroscedasticity-consistent (HC3) standard errors.")
 ```
 
-# Logistic regression and MLE (pedagogical aside)
-
-*The published model is a continuous OLS; this section is a clearly-labeled **pedagogical
-aside** to illustrate logistic regression and maximum likelihood — it is not part of the
-paper's design.* We binarize the outcome into **any outbound FDI** — since 81% of firms
-have exactly zero FDI, `FDI > 0` is the natural cut (a "did the firm invest abroad at all?"
-event, 19% positive) — and fit a logistic GLM with the same predictors.
-
-Where OLS minimizes squared error, logistic regression maximizes the **Bernoulli
-log-likelihood**
-$\ell(\beta)=\sum_i\{y_i\log p_i + (1-y_i)\log(1-p_i)\}$ with
-$p_i=\mathrm{logit}^{-1}(x_i'\beta)$. Coefficients are **log-odds**: $\hat\beta_j$ is the
-change in the log-odds of any-FDI per unit of $x_j$; $e^{\hat\beta_j}$ is the odds ratio.
-The model is fit by IRLS; the printed **deviance** is $-2\ell$ at the solution, and the
-difference between null and residual deviance is the likelihood-ratio evidence that the
-predictors matter.
-
-```{r logit, results='asis'}
-md$any_fdi <- as.integer(md$FDIProjects_Amount > 0)
-glm1 <- glm(any_fdi ~ Board_Ties_to_State_Banks + Firm_Size + Debt_Ratio +
-              Profitability + Chaebol + factor(sic_category),
-            data = md, family = binomial)
-
-sg <- coef(summary(glm1))
-keepg <- c("Board_Ties_to_State_Banks","Firm_Size","Debt_Ratio","Profitability","Chaebol")
-lg <- data.frame(
-  Term = c("Board ties to state banks", "Firm size", "Debt ratio",
-           "Profitability", "Chaebol"),
-  `Log-odds (beta)` = round(sg[keepg,"Estimate"], 3),
-  `Odds ratio` = round(exp(sg[keepg,"Estimate"]), 3),
-  `Std. error` = round(sg[keepg,"Std. Error"], 3),
-  `p value` = round(sg[keepg,"Pr(>|z|)"], 3),
-  check.names = FALSE, row.names = NULL
-)
-kable(lg, booktabs = TRUE,
-      caption = "Logistic regression for Pr(any outbound FDI). Coefficients are log-odds; the odds-ratio column exponentiates them.")
-```
-
-```{r logit-fit, results='asis'}
-ll   <- as.numeric(logLik(glm1))
-lr   <- glm1$null.deviance - glm1$deviance
-lrdf <- glm1$df.null - glm1$df.residual
-prob <- predict(glm1, type = "response")
-auc  <- as.numeric(pROC::auc(md$any_fdi, prob, quiet = TRUE))
-fit_tab <- data.frame(
-  Quantity = c("Log-likelihood at MLE", "Null deviance", "Residual deviance",
-               "LR chi-square (null - residual)", "In-sample AUC"),
-  Value = c(round(ll, 1), round(glm1$null.deviance, 1), round(glm1$deviance, 1),
-            sprintf("%.1f on %d df (p %s)", lr, lrdf,
-                    format.pval(pchisq(lr, lrdf, lower.tail = FALSE), digits = 2)),
-            round(auc, 3))
-)
-kable(fit_tab, booktabs = TRUE,
-      caption = "Maximum-likelihood fit statistics for the logistic model.")
-```
-
-Reading the aside carefully is itself instructive. **Firm size** dominates the log-odds of
-investing abroad at all (a large, highly significant positive coefficient), exactly as in
-the continuous model. **Board ties**, however, illustrate a classic partial-vs-marginal
-subtlety: *unconditionally*, tied firms invest abroad far more often
-(`r sprintf("%.0f%%", 100*mean(md$any_fdi[md$Board_Ties_to_State_Banks==1]))` vs
-`r sprintf("%.0f%%", 100*mean(md$any_fdi[md$Board_Ties_to_State_Banks==0]))`), but once firm
-size and industry are held fixed the *conditional* log-odds coefficient is small and not
-significant (odds ratio $= `r round(exp(coef(glm1)["Board_Ties_to_State_Banks"]),2)`$,
-$p = `r round(coef(summary(glm1))["Board_Ties_to_State_Banks","Pr(>|z|)"],3)`$) — tied firms
-tend to be large firms, and size absorbs the raw association. This is a reminder that
-binarizing a continuous outcome discards information and can shift a coefficient's apparent
-role; the paper's finding lives on the *amount* of FDI, not the yes/no margin. The
-likelihood-ratio test nonetheless overwhelmingly rejects the null of no predictors, driven
-by firm size.
-
 # Flexible mean functions in firm size
 
 Firm size is the dominant predictor, and the diagnostics hinted its effect is not a straight
@@ -913,11 +842,7 @@ The published OLS result reproduces **exactly**: board ties to state banks raise
 ($\hat\beta = 0.136$). Reading that model as a proper multiple regression, each slope is a
 partial effect; but its residual diagnostics are unambiguous — non-flat residuals-vs-fitted,
 a heavy-tailed QQ plot, clear heteroscedasticity (so we report HC3 robust SEs), and a few
-influential firms. The logistic / MLE aside re-expresses the analysis on a binary
-"any-FDI" outcome via the log-likelihood, deviance, and log-odds: firm size again dominates,
-while board ties show a positive *marginal* association that shrinks to insignificance once
-size is controlled — a reminder that binarizing a continuous outcome can move a
-coefficient's apparent role, and that the paper's result lives on the FDI amount.
+influential firms.
 
 The core Day-2 lesson is about **functional form**. A partial-$F$ test rejects the linear
 firm-size term in favour of a cubic; a `mgcv::gam` smooth has effective df well above 1 and

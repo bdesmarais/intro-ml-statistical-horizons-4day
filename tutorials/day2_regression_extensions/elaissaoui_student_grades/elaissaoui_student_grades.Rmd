@@ -710,8 +710,7 @@ knitr::kable(test_tab, row.names = FALSE,
 ggplot(test_tab, aes(reorder(model, test_rmse), test_rmse)) +
   geom_col(fill = "steelblue", width = 0.6) +
   geom_text(aes(label = round(test_rmse, 3)), vjust = -0.4, size = 3) +
-  coord_cartesian(ylim = c(min(test_tab$test_rmse) - 0.05,
-                           max(test_tab$test_rmse) + 0.05)) +
+
   labs(x = NULL, y = "Test-set RMSE",
        title = "Held-out comparison: linear vs. polynomial vs. spline vs. GAM") +
   theme(axis.text.x = element_text(angle = 20, hjust = 1))
