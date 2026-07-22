@@ -1,0 +1,847 @@
+---
+title: "Desposato, Wang & Wu (2021), *The Long-Term Impact of Mobilization and Repression on Political Trust* --- SH Day 1: Model Evaluation"
+author: "Machine-Learning Workshop teaching example"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    number_sections: true
+    toc: false
+header-includes:
+  - \setlength{\emergencystretch}{3em}
+  - \usepackage{fvextra}
+  - \AtBeginDocument{\DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}}
+  - \AtBeginDocument{\DefineVerbatimEnvironment{verbatim}{Verbatim}{breaklines}}
+  - \fvset{breaklines=true}
+---
+
+```{r setup, include=FALSE}
+options(width = 80)
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 6.5, fig.height = 4)
+suppressPackageStartupMessages({
+  library(ggplot2)
+})
+set.seed(42)
+```
+
+# The study
+
+**Citation.** Scott W. Desposato, Gang Wang, and Jason Y. Wu (2021).
+"The Long-Term Impact of Mobilization and Repression on Political Trust."
+*Comparative Political Studies* 54(14): 2447--2474.
+
+**Replication source.** Harvard Dataverse, doi:10.7910/DVN/DCAKKT
+(`DWW_CPS.RData`, \texttt{DWW\_CPS\_\allowbreak PaperAnalysis.R}).
+
+**The design.** The authors surveyed Chinese college graduates and compared
+respondents who *began* college during the 1989 Tiananmen student movement (the
+treated "Tiananmen cohort", `T = 1`) with those who enrolled shortly *after* the
+movement was suppressed (`T = 0`). The claim: the experience of mass mobilization
+and state repression depresses political trust for decades. The paper's headline
+finding is that the effect is **strongest for trust in the central government and
+weakest for local government.**
+
+**The main model (Table 5).** For each of three outcomes --- trust in the central,
+provincial, and local government, each measured on a 0--10 scale --- the paper's
+primary specification is an ordinary least squares regression of trust on the
+Tiananmen-cohort indicator plus demographic controls:
+
+$$
+\text{Trust} = \beta_0 + \beta_1\,T + \beta_2\,\text{Education} + \beta_3\,\text{CCP}
+  + \beta_4\,\text{GovtJob} + \beta_5\,\text{Income2} + \beta_6\,\text{marriage} + \varepsilon.
+$$
+
+(The paper also reports fuzzy-RDD / IV robustness models; those are secondary. The
+OLS models are the clearly identifiable main table and the ones we reproduce and
+extend here.)
+
+```{r load-data}
+# DWW_CPS.RData is the original file downloaded from Dataverse
+# (datafile id 4279578, ?format=original), placed next to this .Rmd.
+load(url(paste0(
+  "https://raw.githubusercontent.com/bdesmarais/intro",
+  "-ml-statistical-horizons-4day/main/tutorials/day1_",
+  "intro_and_evaluation/desposato_wang_wu_trust/data/",
+  "DWW_CPS.RData")))
+predictors <- c("T", "Education", "CCP", "GovtJob", "Income2", "marriage")
+form_cent  <- as.formula(paste("TrustCent ~", paste(predictors, collapse = " + ")))
+```
+
+# Descriptive analysis
+
+Before fitting anything we get to know the data thoroughly. A careful exploratory pass
+does three things at once: it documents *what* the variables are and how they were
+measured, it surfaces distributional features (skew, floor/ceiling effects, missing
+data, collinearity) that determine whether the modeling assumptions are reasonable, and
+it lets us form *expectations* against which the fitted model can be sanity-checked. We
+work through the dataset and its provenance, the outcome in depth, each predictor's
+univariate distribution, missingness, every predictor's bivariate association with
+trust, and the multivariate correlation structure, closing with a narrative that
+connects what we see to the modeling that follows.
+
+```{r eda-frame}
+eda <- data[, c("TrustCent", predictors)]   # outcome + six model predictors
+```
+
+## Dataset and provenance
+
+The unit of analysis is the **individual Chinese college graduate**. The survey has
+**`r nrow(data)` respondents**, and the central-government modeling frame uses
+**`r 1 + length(predictors)` variables** --- the 0--10 trust outcome plus six
+predictors. The data come from an online survey of Chinese university graduates
+administered by Desposato, Wang & Wu and archived on the Harvard Dataverse
+(doi:10.7910/DVN/DCAKKT). There is **no time dimension** in the modeling sense: it is a
+single cross-sectional survey. The one temporal element is each respondent's college
+*start year* (1984--1994), which is not a predictor in the model but the variable that
+*defines the treatment*: respondents who began college in 1988 or earlier lived through
+the 1989 Tiananmen mobilization as students (the treated "Tiananmen cohort", `T = 1`),
+while those who started in 1989 or later did not (`T = 0`). This design turns a
+naturally occurring cutoff in enrollment year into a quasi-experimental comparison.
+
+```{r eda-startyear}
+# The treatment T is a coarsening of college start year at the 1988/1989 cut.
+sy <- table(StartYear = data$start_year, Cohort = data$T)
+knitr::kable(sy,
+  caption = "College start year by Tiananmen-cohort treatment T. T=1 (treated) is start year <= 1988; T=0 is 1989 or later.")
+```
+
+We use a compact **variable dictionary** for the outcome and the six modeling
+predictors. All are numeric codes; five predictors are effectively binary/ordinal and
+one (income) is a multi-level band.
+
+```{r eda-dictionary}
+dict <- data.frame(
+  Variable = c("TrustCent", "T", "Education", "CCP",
+               "GovtJob", "Income2", "marriage"),
+  Role = c("outcome", rep("predictor", 6)),
+  Type = c("ordinal 0-10 (treated as continuous)",
+           "binary indicator", "ordinal (3 levels)", "binary indicator",
+           "binary indicator", "ordinal (9 bands)", "binary indicator"),
+  Description = c("Trust in the CENTRAL government",
+                  "Tiananmen cohort (started college <= 1988)",
+                  "Education level (1=lowest .. 3=highest)",
+                  "Communist Party member (1=yes)",
+                  "Works in a government job (1=yes)",
+                  "Household income band (1=lowest .. 9=highest)",
+                  "Currently married (1=yes)"))
+knitr::kable(dict,
+  caption = "Variable dictionary: the trust outcome and the six modeling predictors, with type and coding.")
+```
+
+## The outcome: trust in the central government
+
+Trust in the central government is a 0--10 self-report, which we treat as continuous
+for OLS. We profile its full distribution with a histogram and overlaid density, then a
+complete statistics table.
+
+```{r eda-outcome, fig.height=3.1, fig.cap="Distribution of central-government trust (0-10) with kernel-density overlay. Mass piles up at the high end of the scale, with a visible ceiling spike at 10."}
+o <- eda$TrustCent
+ggplot(eda, aes(x = TrustCent)) +
+  geom_histogram(aes(y = after_stat(density)), binwidth = 1,
+                 fill = "steelblue", colour = "white", boundary = -0.5) +
+  geom_density(colour = "grey20", linewidth = 0.7) +
+  scale_x_continuous(breaks = 0:10) +
+  labs(x = "Trust in central government (0-10)", y = "Density",
+       title = "Outcome distribution (histogram + density)") +
+  theme_minimal(base_size = 11)
+```
+
+```{r eda-outcome-stats}
+Q <- quantile(o, c(.25, .5, .75))
+outcome_tab <- data.frame(
+  Statistic = c("n", "Mean", "SD", "Min", "Q1", "Median", "Q3",
+                "Max", "IQR", "Skewness", "Kurtosis (excess)"),
+  Value = round(c(length(o), mean(o), sd(o), min(o), Q[1], Q[2], Q[3],
+                  max(o), IQR(o), e1071::skewness(o), e1071::kurtosis(o)), 3),
+  row.names = NULL)
+knitr::kable(outcome_tab,
+  caption = "Central-government trust: full summary statistics including skewness and (excess) kurtosis.")
+```
+
+**Shape and modeling implications.** The distribution is strongly **left-skewed**
+(skewness `r round(e1071::skewness(o),2)`) toward high trust: the median
+(`r median(o)`) exceeds the mean (`r round(mean(o),2)`), and there is a pronounced
+**ceiling effect** --- `r sum(o==10)` of `r length(o)` respondents
+(`r round(100*mean(o==10),1)`%) pick the maximum, 10, while only
+`r sum(o==0)` sit at the floor of 0. Because the mass is concentrated near the top,
+the outcome has modest spread (SD `r round(sd(o),2)` on a 0--10 scale), which already
+signals that a mean-only baseline is a *strong* reference point and any model will have
+limited variance to explain. A monotone transformation (e.g. reflect-and-log) could
+reduce the left skew, but it would distort the 0--10 interpretation the paper relies on
+and, given the categorical predictors and inferential (not predictive) goal of the
+original study, is not warranted; we keep the untransformed scale to match Table 5.
+
+## Univariate distributions of the predictors
+
+Five predictors are binary or low-cardinality ordinal (`T`, `CCP`, `GovtJob`,
+`marriage`, and 3-level `Education`); `Income2` is a 9-band ordinal and the only
+appreciably continuous predictor. We first give a full numeric summary for all six,
+then frequency tables and a faceted bar chart for the categorical/ordinal set.
+
+```{r eda-predictors}
+num_summary <- function(x) {
+  q <- quantile(x, c(.25, .5, .75), na.rm = TRUE)
+  c(n = sum(!is.na(x)), n_miss = sum(is.na(x)),
+    mean = mean(x, na.rm = TRUE), sd = sd(x, na.rm = TRUE),
+    min = min(x, na.rm = TRUE), Q1 = q[[1]], median = q[[2]],
+    Q3 = q[[3]], max = max(x, na.rm = TRUE),
+    skew = e1071::skewness(x, na.rm = TRUE))
+}
+pred_tab <- round(t(sapply(eda[predictors], num_summary)), 3)
+knitr::kable(pred_tab,
+  caption = "Numeric summary of the six predictors: n, missing, mean, sd, min, Q1, median, Q3, max, skewness.")
+```
+
+```{r eda-cat-freq}
+# Frequency tables for the categorical / low-cardinality predictors.
+cat_freq <- function(v) {
+  tb <- table(eda[[v]])
+  paste0(names(tb), ": ", as.integer(tb),
+         " (", round(100 * prop.table(tb), 1), "%)", collapse = "  |  ")
+}
+freq_tab <- data.frame(
+  Predictor = c("T (Tiananmen cohort)", "CCP member", "GovtJob",
+                "marriage", "Education (1-3)"),
+  Breakdown = c(cat_freq("T"), cat_freq("CCP"), cat_freq("GovtJob"),
+                cat_freq("marriage"), cat_freq("Education")))
+knitr::kable(freq_tab,
+  caption = "Category frequencies for the binary and ordinal predictors.")
+```
+
+```{r eda-pred-grid, fig.height=3.6, fig.cap="Univariate distributions of the six predictors. Binary indicators are heavily imbalanced (few CCP members and government workers, most married); Education concentrates at level 1; Income2 is the only predictor with a spread-out, near-symmetric distribution."}
+long <- do.call(rbind, lapply(predictors, function(v)
+  data.frame(variable = v, value = eda[[v]])))
+ggplot(long, aes(x = value)) +
+  geom_bar(fill = "steelblue", colour = "white") +
+  facet_wrap(~ variable, scales = "free", ncol = 3) +
+  labs(x = NULL, y = "Respondents",
+       title = "Predictor distributions") +
+  theme_minimal(base_size = 10)
+```
+
+**What the predictors look like.** The binary controls are **imbalanced**: only
+`r round(100*mean(eda$CCP),0)`% are Party members, `r round(100*mean(eda$GovtJob),0)`%
+hold a government job, and `r round(100*mean(eda$marriage),0)`% are married, so those
+indicators contribute information from a minority (or, for marriage, a small
+complementary) group. `Education` piles up at level 1. The treatment `T` is itself
+imbalanced (`r round(100*mean(eda$T),0)`% treated), reflecting the enrollment-year
+cut. `Income2` is the lone predictor with a broad, roughly symmetric spread across its
+nine bands --- which is why, later, it is the natural variable on which to demonstrate
+the bias--variance tradeoff via polynomial flexibility.
+
+## Missing-data analysis
+
+```{r eda-missing}
+miss <- sapply(eda, function(x) sum(is.na(x)))
+miss_tab <- data.frame(
+  Variable = names(miss),
+  N_missing = as.integer(miss),
+  Pct_missing = round(100 * as.integer(miss) / nrow(eda), 2))
+knitr::kable(miss_tab,
+  caption = "Per-variable missing counts and percentages across the outcome and six predictors.")
+cat("Complete cases (no missing on any modeling variable):",
+    sum(complete.cases(eda)), "of", nrow(eda),
+    "(", round(100 * mean(complete.cases(eda)), 1), "% )\n")
+```
+
+The modeling frame is **fully complete** --- every one of the `r nrow(eda)`
+respondents has all seven values, so there are no missingness patterns to disentangle
+and no variables that co-miss. Consequently no imputation or listwise deletion is
+required, the "mechanism" question (MCAR/MAR/MNAR) is moot for these columns, and the
+reproduction runs on the full sample with no rows dropped. (The raw Dataverse file
+contains additional survey items with their own missingness, but the six modeling
+predictors and the trust outcome are complete.)
+
+## Bivariate relationships with the outcome
+
+We now look at central-government trust against **each** predictor. For the binary and
+ordinal predictors we compare group means (with a two-group difference or a smoother);
+`Income2`, the continuous-ish predictor, gets a scatter/means plot with a smoother and a
+correlation. The headline predictor is `T`: the paper claims treated (`T = 1`)
+respondents report *lower* central-government trust.
+
+```{r eda-bivariate, fig.height=3.2, fig.cap="Central-government trust by Tiananmen cohort (left) and across income bands (right). The treated cohort sits lower; trust drifts down only mildly and near-linearly with income."}
+g1 <- ggplot(eda, aes(x = factor(T, labels = c("Post (T=0)", "Tiananmen (T=1)")),
+                      y = TrustCent)) +
+  geom_boxplot(fill = "steelblue", alpha = 0.6, outlier.size = 0.6) +
+  labs(x = NULL, y = "Trust (central)", title = "By cohort") +
+  theme_minimal(base_size = 10)
+inc_means <- aggregate(TrustCent ~ Income2, eda, mean)
+g2 <- ggplot(inc_means, aes(x = Income2, y = TrustCent)) +
+  geom_point(size = 2, colour = "steelblue") +
+  geom_smooth(data = eda, aes(x = Income2, y = TrustCent), method = "loess",
+              se = FALSE, colour = "grey40", linewidth = 0.7) +
+  scale_x_continuous(breaks = 1:9) +
+  labs(x = "Income band (1-9)", y = "Trust (central)",
+       title = "By income (band means + smoother)") +
+  theme_minimal(base_size = 10)
+if (requireNamespace("gridExtra", quietly = TRUE)) {
+  gridExtra::grid.arrange(g1, g2, ncol = 2)
+} else { print(g1); print(g2) }
+```
+
+To summarise every predictor's marginal association in one place, we tabulate the mean
+trust in each group (for the binary/ordinal predictors, mean at each level and the
+top-minus-bottom gap) alongside the Pearson correlation with the outcome and a simple
+group-difference test where a two-group comparison applies.
+
+```{r eda-assoc-table}
+assoc_row <- function(v) {
+  x <- eda[[v]]; y <- eda$TrustCent
+  r <- cor(x, y)
+  lv <- sort(unique(x))
+  gap <- mean(y[x == max(lv)]) - mean(y[x == min(lv)])   # top - bottom level
+  # Two-group test only where the predictor is binary.
+  p <- if (length(lv) == 2) t.test(y ~ x)$p.value else NA_real_
+  c(cor_with_trust = round(r, 3),
+    top_minus_bottom = round(gap, 3),
+    ttest_p = if (is.na(p)) NA else signif(p, 2))
+}
+assoc <- t(sapply(predictors, assoc_row))
+knitr::kable(assoc,
+  caption = "Each predictor's marginal association with central-government trust: Pearson correlation, top-vs-bottom-level mean gap, and a two-sample t-test p-value (binary predictors only).")
+```
+
+```{r eda-grouped-means}
+grp <- data.frame(
+  Cohort = c("Post (T=0)", "Tiananmen (T=1)"),
+  Mean_trust = round(tapply(eda$TrustCent, eda$T, mean), 3),
+  N = as.integer(table(eda$T)))
+knitr::kable(grp, row.names = FALSE,
+  caption = "Raw (unadjusted) mean central-government trust by cohort.")
+```
+
+**Reading the bivariate signals.** The Tiananmen cohort reports visibly lower raw trust
+than the post-movement cohort --- an unadjusted gap that foreshadows the paper's
+negative `T` coefficient (and the t-test on `T` is the one clearly significant marginal
+association in the table). `marriage`, `CCP` and `GovtJob` show positive but smaller
+mean gaps; `Education` and `Income2` relate to trust only weakly, and income's
+relationship is mild and close to linear (the loess barely bends). No single predictor
+carries a strong marginal signal, consistent with the outcome's small overall spread.
+
+## Multivariate structure and collinearity
+
+Finally we examine how the predictors relate to *each other*. Collinearity would make
+individual OLS coefficients unstable and hard to interpret; we check for it with a
+correlation heatmap over the outcome and the six predictors.
+
+```{r eda-cor, fig.height=3.4, fig.cap="Correlation matrix among the outcome and the six predictors. Correlations are weak throughout; no predictor pair approaches the |r| > 0.7 collinearity threshold."}
+cmat <- cor(eda)
+cor_long <- as.data.frame(as.table(cmat))
+names(cor_long) <- c("V1", "V2", "r")
+ggplot(cor_long, aes(V1, V2, fill = r)) +
+  geom_tile(colour = "white") +
+  geom_text(aes(label = round(r, 2)), size = 2.6) +
+  scale_fill_gradient2(low = "#b2182b", mid = "white", high = "#2166ac",
+                       midpoint = 0, limits = c(-1, 1)) +
+  labs(x = NULL, y = NULL,
+       title = "Correlation heatmap (outcome + predictors)") +
+  theme_minimal(base_size = 10) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r eda-vif}
+# Variance inflation factors from the reproduction model quantify collinearity.
+vif_manual <- function(form, df) {
+  X <- model.matrix(form, df)[, -1, drop = FALSE]   # drop intercept
+  vapply(seq_len(ncol(X)), function(j) {
+    fit <- lm.fit(cbind(1, X[, -j, drop = FALSE]), X[, j])
+    r2j <- 1 - sum(fit$residuals^2) /
+                sum((X[, j] - mean(X[, j]))^2)
+    1 / (1 - r2j)
+  }, numeric(1)) -> v
+  setNames(round(v, 2), colnames(X))
+}
+vif_tab <- vif_manual(form_cent, eda)
+knitr::kable(data.frame(Predictor = names(vif_tab), VIF = as.numeric(vif_tab)),
+  caption = "Variance inflation factors for the six predictors in the reproduction model. All are near 1, confirming no collinearity (a common alarm threshold is VIF > 5).")
+```
+
+The largest predictor--predictor correlation in absolute value is
+`r round(max(abs(cmat[predictors, predictors][upper.tri(cmat[predictors, predictors])])), 3)`
+--- far below the |r| > 0.7 flag --- and every variance inflation factor sits near 1.
+There is therefore **no collinearity problem**: each predictor carries roughly
+independent information and the OLS coefficients are cleanly identified.
+
+## Reading the descriptives as a whole
+
+Pulling the EDA together: central-government trust is high, left-skewed, and
+ceiling-heavy, so a naive mean predictor is already a strong reference point and the
+outcome offers limited variance to explain. The six predictors are imbalanced and,
+apart from income, low-cardinality; their marginal associations with trust are weak
+individually, with the Tiananmen-cohort gap the clearest single signal --- previewing
+the paper's negative `T` coefficient. Predictors are close to mutually uncorrelated
+(no collinearity, VIFs ~ 1), income is the only appreciably continuous predictor and
+relates to trust mildly and near-linearly, and there is no missing data. Together these
+features mean the OLS reproduction is clean and cleanly identified, and they foreshadow
+the Day-1 punchline: with a weak, low-dimensional, near-linear signal, there is little
+room for a flexible model to beat a well-specified linear one.
+
+# Reproduction of the published regression
+
+We refit the exact Table 5 OLS models. The replication code produces the paper's
+own table by construction, so its output *is* the published number; we display the
+Tiananmen-cohort coefficient (`T`) for all three outcomes, which is the paper's
+substantive result.
+
+```{r reproduce}
+m_cent  <- lm(TrustCent  ~ T + Education + CCP + GovtJob + Income2 + marriage, data = data)
+m_prov  <- lm(TrustProv  ~ T + Education + CCP + GovtJob + Income2 + marriage, data = data)
+m_local <- lm(TrustLocal ~ T + Education + CCP + GovtJob + Income2 + marriage, data = data)
+
+coef_row <- function(m) {
+  s <- summary(m)$coefficients
+  c(Estimate = round(s["T","Estimate"], 3),
+    SE       = round(s["T","Std. Error"], 3),
+    p        = signif(s["T","Pr(>|t|)"], 2))
+}
+tt <- rbind(`Central gov.`    = coef_row(m_cent),
+            `Provincial gov.` = coef_row(m_prov),
+            `Local gov.`      = coef_row(m_local))
+knitr::kable(tt, caption = "Reproduced Tiananmen-cohort (T) effect on political trust, Table 5 OLS models (n = 1208 each).")
+```
+
+The reproduced gradient --- **central ($-0.51$, $p<0.001$) $>$ provincial ($-0.35$)
+$>$ local ($-0.25$, n.s.)** --- matches the paper's stated finding that the effect
+is strongest for the central government and weakest (and here not significant) for
+local government. Full match table for the main (central-government) model:
+
+```{r match-table}
+pub <- c("(Intercept)"=7.559, "T"=-0.511, "Education"=-0.610,
+         "CCP"=0.365, "GovtJob"=0.583, "Income2"=-0.091, "marriage"=0.847)
+rep <- round(coef(m_cent), 3)
+match_tab <- data.frame(
+  Term        = names(pub),
+  Published   = as.numeric(pub),
+  Reproduced  = as.numeric(rep[names(pub)]),
+  row.names   = NULL)
+match_tab$Diff <- round(match_tab$Reproduced - match_tab$Published, 4)
+knitr::kable(match_tab, caption = "Published vs. reproduced coefficients, central-government OLS (Table 5, Model 2). Published values are the replication code's own OLS output.")
+```
+
+Every coefficient reproduces to reported precision (differences are rounding only).
+The Tiananmen-cohort coefficient is **`r round(coef(m_cent)["T"], 3)`**.
+**The reproduction gate is passed** and we keep this fitted model as the anchor for
+everything below.
+
+# Day 1: Model evaluation
+
+Everything above is *explanatory* modeling in Shmueli's sense (Shmueli 2010, "To
+Explain or to Predict?"): the OLS coefficient on `T` is estimated and interpreted as
+the association of interest, and the paper never asks how well the model *predicts a
+new respondent's* trust. Day 1 flips the question. We keep the **same outcome**
+(central-government trust, a 0--10 continuous score) and the **same six predictors**,
+but now judge models by **honest out-of-sample prediction error** and build up the
+standard evaluation toolkit on top of the model we just reproduced.
+
+```{r day1-setup}
+# Analysis frame: same outcome + predictors, complete cases only.
+d <- data[, c("TrustCent", predictors)]
+d <- d[complete.cases(d), ]
+n <- nrow(d)
+rmse <- function(a, b) sqrt(mean((a - b)^2))
+mae  <- function(a, b) mean(abs(a - b))
+r2   <- function(truth, pred) 1 - sum((truth - pred)^2) / sum((truth - mean(truth))^2)
+cat("Analysis N =", n, "| outcome mean =", round(mean(d$TrustCent), 3),
+    "| outcome SD =", round(sd(d$TrustCent), 3), "\n")
+```
+
+## Predictive vs. explanatory framing --- and why we hold out data
+
+The reproduced regression is fit on all `r n` respondents and then read off its
+coefficients. If we instead ask "how accurately does this model predict trust?" and
+answer using the *same* rows we fit on, we flatter ourselves: the model has already
+seen every answer. The honest question is how it does on respondents it has **never
+seen**. That is the entire motivation for holding out data. We first show the size of
+the self-flattery, the **in-sample optimism**.
+
+```{r optimism}
+m_full  <- lm(form_cent, d)
+insamp  <- rmse(d$TrustCent, predict(m_full))          # scored on training rows
+insampR2 <- summary(m_full)$r.squared
+cat("In-sample RMSE (fit and scored on all", n, "rows):", round(insamp, 3), "\n")
+cat("In-sample R^2:", round(insampR2, 3), "\n")
+```
+
+That in-sample number is optimistic *by construction*. To measure it honestly we
+need data the model did not fit. Two protocols follow: a single train/test split
+(simple, but noisy), then $k$-fold cross-validation (uses every row for both roles).
+
+## A single train/test split
+
+We randomly assign 70% of respondents to *train* and 30% to *test*, fit OLS on the
+training rows only, and score on the test rows.
+
+```{r single-split}
+tr_idx <- sample(n, round(0.70 * n))
+train  <- d[tr_idx, ]
+test   <- d[-tr_idx, ]
+
+m_split   <- lm(form_cent, train)
+tr_rmse   <- rmse(train$TrustCent, predict(m_split))            # in-sample (train)
+te_rmse   <- rmse(test$TrustCent,  predict(m_split, test))      # honest (test)
+
+split_tab <- data.frame(
+  Quantity = c("Training rows", "Test rows",
+               "In-sample RMSE (train)", "Held-out RMSE (test)"),
+  Value    = c(nrow(train), nrow(test),
+               round(tr_rmse, 3), round(te_rmse, 3)))
+knitr::kable(split_tab, caption = "Single 70/30 train/test split, OLS. The held-out RMSE is the honest estimate of prediction error.")
+```
+
+The held-out RMSE is the honest estimate --- but notice what happened on this draw:
+the test RMSE (`r round(te_rmse,3)`) came out *below* the training RMSE
+(`r round(tr_rmse,3)`). That is not a paradox; it is the noise of a single split.
+With only `r nrow(test)` test respondents, which rows happen to land in the test set
+moves the estimate substantially, and on a lucky draw the test set is simply easier
+to predict than the training data. A single split is honest but wobbly --- and it
+wastes 30% of the data. Cross-validation fixes both.
+
+## $k$-fold cross-validation (folds written out explicitly)
+
+We partition the `r n` respondents into $K=10$ disjoint folds. Each fold takes a
+turn as the held-out test set while the other nine train the model; every respondent
+is predicted exactly once, from a model that never saw them. We print the fold sizes
+to make the mechanics concrete.
+
+```{r kfold}
+K <- 10
+folds <- sample(rep(1:K, length.out = n))   # fold label for every respondent
+knitr::kable(as.data.frame(table(Fold = folds), responseName = "Size"),
+             caption = "Explicit fold assignment: each of the 1208 respondents gets one fold label (1-10).")
+
+cv_ols_pred <- numeric(n)                   # out-of-fold prediction for each row
+for (k in 1:K) {
+  tri <- folds != k; tei <- folds == k
+  fit <- lm(form_cent, d[tri, ])
+  cv_ols_pred[tei] <- predict(fit, d[tei, ])
+}
+cv_rmse_ols <- rmse(d$TrustCent, cv_ols_pred)
+cat("10-fold CV RMSE (OLS):", round(cv_rmse_ols, 3), "\n")
+```
+
+We now have three numbers for the *same* OLS model: an in-sample RMSE of
+`r round(insamp,3)`, a single-split held-out RMSE of `r round(te_rmse,3)`, and a
+stable 10-fold CV RMSE of `r round(cv_rmse_ols,3)`. The comparison that measures
+**optimism** is in-sample vs. CV: the in-sample number is lower, but only slightly
+--- a six-predictor linear model has little capacity to flatter itself. The
+single-split estimate, by contrast, landed *below both*; that is sampling noise, not
+evidence that unseen data are easier to predict, and it is exactly why the pooled CV
+estimate --- not any single split --- is the number to report.
+
+## The bias--variance tradeoff: a validation curve
+
+Prediction error decomposes into **bias** (systematic error from a model too rigid
+to capture the signal) and **variance** (error from a model so flexible it chases
+noise in the particular training sample). We expose the tradeoff with a **flexibility
+knob** that stays entirely within Day-1's linear-model toolkit: the **degree of a
+polynomial**. We keep OLS and the same six predictors, but replace the linear income
+term with a degree-$p$ polynomial in income, `poly(Income2, p)` --- income being the
+only appreciably continuous predictor. Degree $p=1$ is the original linear fit (most
+rigid); higher $p$ lets the income--trust curve wiggle more (more flexible). We sweep
+$p$ and, at each value, record **training** error and **cross-validated** error.
+
+```{r validation-curve, fig.height=3.6, fig.cap="Validation curve for OLS with a degree-p polynomial in income. Training error falls monotonically with degree (more flexibility); CV (held-out) error is U-shaped, minimized at an intermediate degree. The gap between the curves is the variance the flexible fits pay."}
+degrees <- 1:8
+# Build the OLS formula with poly(Income2, p) in place of the linear Income2 term.
+poly_form <- function(p) {
+  other <- setdiff(predictors, "Income2")
+  as.formula(paste("TrustCent ~", paste(other, collapse = " + "),
+                   "+ poly(Income2,", p, ")"))
+}
+poly_train_rmse <- function(p) {
+  fit <- lm(poly_form(p), d)              # fit and scored on all rows (in-sample)
+  rmse(d$TrustCent, predict(fit))
+}
+poly_cv_rmse <- function(p) {
+  err <- numeric(K)
+  for (f in 1:K) {
+    tri <- folds != f; tei <- folds == f
+    fit <- lm(poly_form(p), d[tri, ])
+    err[f] <- rmse(d$TrustCent[tei], predict(fit, d[tei, ]))
+  }
+  mean(err)
+}
+vc <- data.frame(degree = degrees,
+                 Train = sapply(degrees, poly_train_rmse),
+                 CV    = sapply(degrees, poly_cv_rmse))
+best_deg <- vc$degree[which.min(vc$CV)]
+
+vc_long <- rbind(data.frame(degree = vc$degree, RMSE = vc$Train, Curve = "Training (in-sample)"),
+                 data.frame(degree = vc$degree, RMSE = vc$CV,    Curve = "Cross-validated (held-out)"))
+ggplot(vc_long, aes(x = degree, y = RMSE, colour = Curve)) +
+  geom_line(linewidth = 0.8) + geom_point() +
+  geom_vline(xintercept = best_deg, linetype = "dashed", colour = "grey40") +
+  scale_x_continuous(breaks = degrees) +
+  labs(x = "polynomial degree in income --- more flexible to the right",
+       y = "RMSE", colour = NULL,
+       title = paste0("Bias-variance: CV error minimized at degree = ", best_deg)) +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "top")
+```
+
+Reading the curve left to right: at degree $p=1$ the income term is a straight line
+(most bias, least variance); as the degree grows the training error **falls
+monotonically** (a more flexible curve always fits the training rows at least as well)
+while the CV error traces a **U-shape --- minimized at degree $`r best_deg`$** --- and
+then rises as the high-degree polynomial starts chasing noise (variance). This is the
+canonical bias--variance tradeoff, and the CV minimum is the flexibility sweet spot.
+
+## Performance metrics for a continuous outcome, vs. a naive baseline
+
+Trust is continuous (0--10), so the relevant metrics are **RMSE** (root mean squared
+error, in trust points), **MAE** (mean absolute error, in trust points), and **$R^2$**
+(share of variance explained). Every metric is meaningless without a reference: we
+always compare against the **naive baseline** that ignores all predictors and simply
+predicts the training-set mean trust for everyone. All numbers below are 10-fold CV
+(out-of-fold), so they are honest.
+
+```{r metric-suite}
+# Out-of-fold predictions for baseline, OLS, and the CV-best polynomial model.
+base_pred <- numeric(n); poly_pred <- numeric(n)
+for (k in 1:K) {
+  tri <- folds != k; tei <- folds == k
+  base_pred[tei] <- mean(d$TrustCent[tri])                              # mean baseline
+  fit_p <- lm(poly_form(best_deg), d[tri, ])
+  poly_pred[tei] <- predict(fit_p, d[tei, ])
+}
+metric_tab <- data.frame(
+  Model = c("Naive baseline (mean)", "OLS (reproduced spec)",
+            paste0("Poly OLS (income degree = ", best_deg, ")")),
+  RMSE  = round(c(rmse(d$TrustCent, base_pred), cv_rmse_ols, rmse(d$TrustCent, poly_pred)), 3),
+  MAE   = round(c(mae (d$TrustCent, base_pred),
+                  mae (d$TrustCent, cv_ols_pred),
+                  mae (d$TrustCent, poly_pred)), 3),
+  R2    = round(c(r2  (d$TrustCent, base_pred),
+                  r2  (d$TrustCent, cv_ols_pred),
+                  r2  (d$TrustCent, poly_pred)), 3))
+knitr::kable(metric_tab, caption = "10-fold CV metric suite vs. a mean baseline. RMSE and MAE in trust points (0-10 scale); R^2 is out-of-sample.")
+```
+
+The baseline's out-of-sample $R^2$ is ~0 by construction (predicting the mean
+explains no variance beyond the mean). The reproduced OLS and the CV-best polynomial
+both beat the baseline on all three metrics, but only modestly --- and the polynomial
+barely improves on the plain linear fit, a preview of the closing point that six
+mostly-categorical predictors carry a **small, largely linear** signal.
+
+## Parameters vs. hyperparameters; grid and random search
+
+A **parameter** is learned by fitting on data --- the OLS coefficients $\hat\beta$,
+learned by least squares. A **hyperparameter** is a knob *we* set before fitting and
+cannot read off the data by least squares: here it is the **polynomial degree**, and
+we can also treat **which predictor** receives the polynomial as a second knob. We
+tune hyperparameters by scoring each candidate configuration with cross-validation.
+Two standard search strategies:
+
+```{r cv-poly-helper}
+# CV RMSE for a polynomial configuration: (degree p, target predictor), fixed folds.
+poly_form_var <- function(p, var) {
+  other <- setdiff(predictors, var)
+  as.formula(paste("TrustCent ~", paste(other, collapse = " + "),
+                   "+ poly(", var, ",", p, ")"))
+}
+cv_poly_cfg <- function(p, var) {
+  err <- numeric(K)
+  for (f in 1:K) {
+    tri <- folds != f; tei <- folds == f
+    fit <- lm(poly_form_var(p, var), d[tri, ])
+    err[f] <- rmse(d$TrustCent[tei], predict(fit, d[tei, ]))
+  }
+  mean(err)
+}
+# Max usable degree per predictor: a degree-p polynomial needs > p distinct values.
+max_deg <- function(var) length(unique(d[[var]])) - 1
+```
+
+**Grid search** evaluates every combination on a predefined lattice. We cross
+polynomial degree with the two predictors that have enough distinct values to support
+one (`Income2`, up to degree 8; `Education`, which has only 3 levels, up to degree 2).
+
+```{r grid-search}
+grid_var  <- c("Income2", "Education")
+grid <- do.call(rbind, lapply(grid_var, function(v)
+  data.frame(degree = 1:min(8, max_deg(v)), var = v, stringsAsFactors = FALSE)))
+grid$cvRMSE  <- mapply(cv_poly_cfg, grid$degree, grid$var)
+grid_best    <- grid[which.min(grid$cvRMSE), ]
+cat("Grid search evaluated", nrow(grid), "configurations. Best:",
+    "degree =", grid_best$degree, "| predictor =", grid_best$var,
+    "| CV RMSE =", round(grid_best$cvRMSE, 3), "\n")
+```
+
+**Random search** samples configurations at random from the same ranges --- often
+finding a comparable optimum with fewer evaluations, and here randomizing both the
+degree and which predictor gets the polynomial.
+
+```{r random-search}
+set.seed(7)
+n_rand <- 15
+rand <- data.frame(var = sample(grid_var, n_rand, replace = TRUE),
+                   stringsAsFactors = FALSE)
+# Draw a valid degree for each sampled predictor (respecting its distinct-value cap).
+rand$degree <- vapply(rand$var, function(v) sample(1:min(8, max_deg(v)), 1), integer(1))
+rand$cvRMSE <- mapply(cv_poly_cfg, rand$degree, rand$var)
+rand_best   <- rand[which.min(rand$cvRMSE), ]
+cat("Random search evaluated", n_rand, "configurations. Best:",
+    "degree =", rand_best$degree, "| predictor =", rand_best$var,
+    "| CV RMSE =", round(rand_best$cvRMSE, 3), "\n")
+```
+
+Validation curves from the two searches --- one line per predictor (grid) plus the
+random draws overlaid --- make the tuning visible:
+
+```{r search-curves, fig.height=3.6, fig.cap="Validation curves from the hyperparameter searches. Grid: CV RMSE vs. polynomial degree for each candidate predictor (lines). Random: sampled configurations (crosses). Both searches converge on the same shallow optimum."}
+ggplot() +
+  geom_line(data = grid, aes(x = degree, y = cvRMSE, colour = var), linewidth = 0.8) +
+  geom_point(data = grid, aes(x = degree, y = cvRMSE, colour = var)) +
+  geom_point(data = rand, aes(x = degree, y = cvRMSE, shape = "random draw"),
+             colour = "black", size = 2) +
+  geom_point(data = grid_best, aes(x = degree, y = cvRMSE), colour = "red",
+             size = 4, shape = 1, stroke = 1.2) +
+  scale_shape_manual(values = c("random draw" = 4)) +
+  scale_x_continuous(breaks = 1:8) +
+  labs(x = "polynomial degree", y = "CV RMSE", colour = "predictor (grid)", shape = NULL,
+       title = "Grid (lines) and random (crosses) search; red ring = grid optimum") +
+  theme_minimal(base_size = 11) + theme(legend.position = "top")
+```
+
+Both strategies land on essentially the same shallow optimum (CV RMSE around
+`r round(min(grid$cvRMSE),3)`), confirming that the tuning surface is flat --- there
+is no exotic polynomial degree that unlocks hidden predictive power here.
+
+## Tying evaluation back to the reproduced regression
+
+Finally, we put the honestly-evaluated learners side by side with the reproduced OLS
+and the naive baseline, all under the identical 10-fold protocol.
+
+```{r final-comparison}
+# Out-of-fold predictions for the CV-best polynomial from the grid search.
+poly_best_pred <- numeric(n)
+for (k in 1:K) {
+  tri <- folds != k; tei <- folds == k
+  fit_b <- lm(poly_form_var(grid_best$degree, grid_best$var), d[tri, ])
+  poly_best_pred[tei] <- predict(fit_b, d[tei, ])
+}
+final_tab <- data.frame(
+  Model = c("Naive baseline (mean)",
+            "OLS --- reproduced Table-5 spec",
+            paste0("Poly OLS --- best grid (", grid_best$var, ", degree ", grid_best$degree, ")")),
+  CV_RMSE = round(c(rmse(d$TrustCent, base_pred),
+                    cv_rmse_ols,
+                    grid_best$cvRMSE), 3),
+  CV_R2   = round(c(r2(d$TrustCent, base_pred),
+                    r2(d$TrustCent, cv_ols_pred),
+                    r2(d$TrustCent, poly_best_pred)), 3))
+knitr::kable(final_tab, caption = "Honest (10-fold CV) comparison: the reproduced OLS, the CV-best polynomial model, and the naive baseline predicting central-government trust.")
+```
+
+The reproduced regression --- the very model whose $-0.511$ Tiananmen-cohort
+coefficient is the paper's headline --- is **not just an explanatory device; it is
+also a competitive predictor.** After honest cross-validation, OLS matches the
+CV-best polynomial model and both clear the mean baseline by a similar, modest margin. The
+predictive lens does not overturn the explanatory story: it shows that the signal the
+paper documents (a Tiananmen-cohort gap of about half a point, plus the
+education/CCP/income controls) is close to *all the predictable signal there is* in
+these six variables. The gap between the in-sample RMSE (`r round(insamp,3)`) and the
+CV RMSE (`r round(cv_rmse_ols,3)`) is small precisely because a six-variable,
+near-linear model has little room to overfit --- which is exactly why the paper's OLS
+inference is trustworthy.
+
+# Takeaway
+
+Day 1's toolkit, demonstrated end to end on the reproduced trust model:
+
+- **Explanatory vs. predictive framing.** The paper estimates and interprets
+  $\beta_T = -0.511$; we re-asked how well the same model *predicts unseen
+  respondents*.
+- **In-sample optimism.** In-sample RMSE `r round(insamp,3)` vs. honest CV RMSE
+  `r round(cv_rmse_ols,3)` --- a small gap, as a rigid six-predictor linear model
+  should show; the noisier single-split estimate (`r round(te_rmse,3)`) landed on
+  the *other side* of the in-sample number, an object lesson in why we average over
+  folds instead of trusting one split.
+- **Data splitting.** A single 70/30 split, then explicit 10-fold CV with the fold
+  sizes printed.
+- **Bias--variance.** A polynomial-degree validation curve: training error falls
+  monotonically with flexibility, CV error U-shaped, minimized at degree
+  $`r best_deg`$.
+- **Metric suite + baseline.** RMSE, MAE and $R^2$ for the continuous outcome, always
+  against the mean baseline.
+- **Hyperparameters vs. parameters, grid & random search.** Polynomial degree (and
+  which predictor gets the polynomial) tuned by both grid and random search, with
+  validation curves from each.
+- **Back to the regression.** Under honest CV the reproduced OLS ties the CV-best
+  polynomial model and beats the baseline: the paper's explanatory model is also a
+  sound predictive one, and its low overfitting risk is *why* its inference holds up.
+
+# Independent exercises (each about 10 minutes)
+
+1. **How much work does one control do?** Refit the reproduced specification
+   *without* `Education`, reusing the same `folds` (copy the loop from the
+   final-comparison chunk and edit the formula). Compare its out-of-fold RMSE
+   with `cv_rmse_ols` and the mean baseline in `final_tab`.
+
+2. **The headline variable alone.** Add a `TrustCent ~ T` row to the same
+   comparison. How much of the six-variable model's edge over the baseline
+   does the Tiananmen-cohort indicator deliver by itself?
+
+3. **CV design.** Set `K <- 5`, redraw `folds`, and recompute `cv_rmse_ols`.
+   How much does the CV estimate move, and why would you expect 5-fold and
+   10-fold CV to disagree only slightly on n of this size?
+   
+   
+```{r exercise2}
+# Out-of-fold predictions for the cohort-only model, TrustCent ~ T,
+# reusing the same fold assignment as every other comparison.
+t_only_pred <- numeric(n)
+for (k in 1:K) {
+  tri <- folds != k; tei <- folds == k
+  fit_t <- lm(TrustCent ~ T, d[tri, ])
+  t_only_pred[tei] <- predict(fit_t, d[tei, ])
+}
+ex2_tab <- rbind(
+  final_tab,
+  data.frame(Model   = "OLS --- Tiananmen cohort only (TrustCent ~ T)",
+             CV_RMSE = round(rmse(d$TrustCent, t_only_pred), 3),
+             CV_R2   = round(r2(d$TrustCent, t_only_pred), 3)))
+knitr::kable(ex2_tab,
+  caption = "Exercise 2: the cohort-only model added to the 10-fold CV comparison.")
+
+# How much of the six-variable model's edge over the baseline does T deliver?
+base_rmse <- rmse(d$TrustCent, base_pred)
+edge_full <- base_rmse - cv_rmse_ols
+edge_t    <- base_rmse - rmse(d$TrustCent, t_only_pred)
+cat("Baseline-to-full-model RMSE improvement:", round(edge_full, 3), "\n")
+cat("Baseline-to-T-only RMSE improvement:   ", round(edge_t, 3),
+    "(", round(100 * edge_t / edge_full, 1), "% of the full model's edge )\n")
+```
+
+```{r poly-income-viz, fig.height=3.6, fig.cap="Estimated degree-p polynomial in income from the CV-best specification, with the other five predictors held at their sample means. Points are raw income-band mean trust levels; the ribbon is a pointwise 95% confidence band."}
+# Fit the CV-best polynomial specification on the full analysis frame.
+m_poly <- lm(poly_form(best_deg), d)
+
+# Prediction grid: sweep Income2 over its observed range, hold the other
+# predictors at their sample means (fine for a linear predictor display).
+inc_grid <- data.frame(Income2 = seq(min(d$Income2), max(d$Income2),
+                                     length.out = 200))
+for (v in setdiff(predictors, "Income2")) inc_grid[[v]] <- mean(d[[v]])
+pr <- predict(m_poly, inc_grid, interval = "confidence")
+inc_grid$fit <- pr[, "fit"]; inc_grid$lwr <- pr[, "lwr"]; inc_grid$upr <- pr[, "upr"]
+
+# Raw band means for reference (as in the EDA bivariate plot).
+inc_means <- aggregate(TrustCent ~ Income2, d, mean)
+
+ggplot(inc_grid, aes(x = Income2, y = fit)) +
+  geom_ribbon(aes(ymin = lwr, ymax = upr), fill = "steelblue", alpha = 0.2) +
+  geom_line(colour = "steelblue", linewidth = 0.9) +
+  geom_point(data = inc_means, aes(x = Income2, y = TrustCent),
+             colour = "grey30", size = 2) +
+  scale_x_continuous(breaks = 1:9) +
+  labs(x = "Income band (1-9)",
+       y = "Predicted trust (central)",
+       title = paste0("Estimated income polynomial (degree = ", best_deg,
+                      "), other predictors at means")) +
+  theme_minimal(base_size = 11)
+```
+
+
+
+
