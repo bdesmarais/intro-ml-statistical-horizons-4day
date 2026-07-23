@@ -369,7 +369,7 @@ cat(sprintf("Best ML gain over the logistic RSF on the held-out test set: +%.3f 
             max(test_auc[-1]) - test_auc["Logit"]))
 ```
 
-```{r cv-plot, echo=FALSE, fig.height=3, fig.cap="Held-out test-set AUC-PR (higher is better). Grey = published logistic RSF; blue = best ML."}
+```{r cv-plot, fig.height=3, fig.cap="Held-out test-set AUC-PR (higher is better). Grey = published logistic RSF; blue = best ML."}
 par(mar = c(4, 4, 2.5, 1))
 cols <- c("grey70", "#a6cee3", "#a6cee3", "#a6cee3"); cols[which.max(test_auc[-1]) + 1] <- "#1f78b4"
 bp <- barplot(test_auc, col = cols, ylim = c(0, 1.12), ylab = "AUC-PR", main = "Militarized disputes: held-out test AUC-PR by model")
@@ -390,7 +390,7 @@ shap <- predict(xgb, X, predcontrib = TRUE)   # last column is the model bias
 shap <- shap[, colnames(X)]                    # drop the BIAS column
 ```
 
-```{r imp-plot, echo=FALSE, fig.height=3.2, fig.cap="Permutation importance (left) and SHAP importance (right)."}
+```{r imp-plot, fig.height=3.2, fig.cap="Permutation importance (left) and SHAP importance (right)."}
 par(mfrow = c(1, 2), mar = c(4, 7, 2.5, 1))
 imp_rf <- tail(sort(rf$variable.importance), 8)
 barplot(imp_rf, horiz = TRUE, las = 1, names.arg = clean(names(imp_rf)), cex.names = 0.8,
@@ -400,7 +400,7 @@ barplot(imp_sh, horiz = TRUE, las = 1, names.arg = clean(names(imp_sh)), cex.nam
         col = "#6a3d9a", main = "SHAP importance", xlab = "mean(|SHAP|)")
 ```
 
-```{r beeswarm, echo=FALSE, fig.height=3.6, fig.cap="SHAP summary. Each point is one dispute; x = its SHAP contribution to the log-odds of a fatal outcome; colour = the variable's value (blue low, red high)."}
+```{r beeswarm, fig.height=3.6, fig.cap="SHAP summary. Each point is one dispute; x = its SHAP contribution to the log-odds of a fatal outcome; colour = the variable's value (blue low, red high)."}
 top <- names(sort(colMeans(abs(shap)), decreasing = TRUE))[1:8]
 set.seed(1); s <- sample(nrow(shap), min(600, nrow(shap)))
 par(mar = c(4, 7, 2.5, 1))
@@ -423,7 +423,7 @@ disputes between neighbouring states carry large positive SHAP, the single stron
 push risk up. Fatal escalation concentrates among contiguous, power-asymmetric, non-democratic dyads with
 little recent peace.
 
-```{r pdp, echo=FALSE, fig.height=3.2, fig.cap="Partial dependence (left) and SHAP dependence (right) for peace-years."}
+```{r pdp, fig.height=3.2, fig.cap="Partial dependence (left) and SHAP dependence (right) for peace-years."}
 par(mfrow = c(1, 2), mar = c(4, 4.2, 2.5, 1))
 grid <- seq(quantile(d$peaceyears, .02), quantile(d$peaceyears, .98), length.out = 50)
 nd <- matrix(apply(X, 2, median), nrow = 50, ncol = ncol(X), byrow = TRUE, dimnames = list(NULL, colnames(X)))

@@ -115,7 +115,7 @@ single-window design does limit external generalizability.
 
 The outcome and the five modeled predictors are summarized in the dictionary below.
 
-```{r eda-dict, echo=FALSE}
+```{r eda-dict}
 dict <- data.frame(
   Variable = c("sev (Death_ICU)","o2L","temp","sputum","iddm","ckd"),
   Role     = c("Outcome","Predictor","Predictor","Predictor","Predictor","Predictor"),
@@ -143,12 +143,13 @@ It is simultaneously the no-skill benchmark a learner must beat, the floor of th
 precision-recall curve, and the quantity that decides whether the problem is "rare-event"
 (needing special handling) or merely "imbalanced."
 
-```{r eda-outcome, echo=FALSE, fig.height=3, fig.cap="Class balance of the severe-illness outcome. The cohort is moderately imbalanced: roughly two of every five patients experienced ICU admission or death."}
+```{r eda-outcome, fig.height=3, fig.cap="Class balance of the severe-illness outcome. The cohort is moderately imbalanced: roughly two of every five patients experienced ICU admission or death."}
 ob <- data.frame(Outcome = factor(ifelse(dat$sev==1,"Severe (ICU/death)","Not severe"),
                                   levels=c("Not severe","Severe (ICU/death)")))
 ggplot(ob, aes(Outcome, fill = Outcome)) +
   geom_bar(width = .6) +
   geom_text(stat = "count", aes(label = after_stat(count)), vjust = -0.3) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.12))) +
   scale_fill_manual(values = c("grey65","firebrick"), guide = "none") +
   labs(x = NULL, y = "Patients",
        title = sprintf("Severe-illness base rate = %.1f%% (%d of %d)",
@@ -156,7 +157,7 @@ ggplot(ob, aes(Outcome, fill = Outcome)) +
   theme_minimal()
 ```
 
-```{r eda-outcome-tab, echo=FALSE}
+```{r eda-outcome-tab}
 knitr::kable(data.frame(
   Outcome    = c("Not severe (0)","Severe: ICU or death (1)","Total"),
   n          = c(sum(dat$sev==0), sum(dat$sev==1), nrow(dat)),
@@ -171,7 +172,7 @@ of skew and kurtosis are of limited interest, though we report the Bernoulli val
 completeness alongside the events-per-variable (EPV) diagnostic that actually matters for a
 logistic fit.
 
-```{r eda-outcome-stats, echo=FALSE}
+```{r eda-outcome-stats}
 p  <- mean(dat$sev); q <- 1 - p; npos <- sum(dat$sev)
 epv <- npos / 5   # 5 predictors in the reproduction model
 ostat <- data.frame(
@@ -198,7 +199,7 @@ Two predictors are continuous (supplemental oxygen at admission, admission tempe
 three are binary comorbidity/symptom flags. We profile each on its own before relating any of
 them to the outcome.
 
-```{r eda-num-tab, echo=FALSE}
+```{r eda-num-tab}
 # Full numeric summary incl. quartiles, IQR, skew, kurtosis (e1071).
 num_summary <- function(x) {
   qs <- quantile(x, c(.25,.5,.75), na.rm = TRUE)
@@ -217,7 +218,7 @@ knitr::kable(round(numtab, 2), booktabs = TRUE,
   caption = "Numeric predictors: full summary statistics. Supplemental O2 is heavily right-skewed (median 0 = room air) with high positive kurtosis; temperature is near-symmetric.")
 ```
 
-```{r eda-num-hist, echo=FALSE, fig.height=3.2, fig.cap="Distributions of the two continuous predictors. Supplemental oxygen (left) is a spike-and-tail: a large room-air mass at 0 L/min with a long right tail. Admission temperature (right) is roughly bell-shaped around 99 F."}
+```{r eda-num-hist, fig.height=3.2, fig.cap="Distributions of the two continuous predictors. Supplemental oxygen (left) is a spike-and-tail: a large room-air mass at 0 L/min with a long right tail. Admission temperature (right) is roughly bell-shaped around 99 F."}
 nl <- rbind(
   data.frame(val = dat$o2L,  var = "Supplemental O2 (L/min)"),
   data.frame(val = dat$temp, var = "Admit temperature (F)"))
@@ -237,7 +238,7 @@ partial-dependence plots later probe. Admission **temperature** is close to symm
 both continuous predictors enter the reproduction untransformed (to match the paper), we leave
 them as-is but flag the O$_2$ skew as the main nonlinearity to watch.
 
-```{r eda-bin-tab, echo=FALSE}
+```{r eda-bin-tab}
 bintab <- do.call(rbind, lapply(c("sputum","iddm","ckd"), function(v){
   data.frame(Predictor = c(sputum="Sputum production", iddm="IDDM (insulin-dep. diabetes)",
                            ckd="Chronic kidney disease")[v],
@@ -247,7 +248,7 @@ knitr::kable(bintab, row.names = FALSE, booktabs = TRUE,
   caption = "Binary predictors: frequency and prevalence. All three flags are relatively uncommon (11-23%).")
 ```
 
-```{r eda-bin-bar, echo=FALSE, fig.height=2.8, fig.cap="Prevalence of the three binary predictors. All are minority flags, and the two rarest (IDDM, CKD) carry few positive cases -- the source of the wide confidence intervals on their odds ratios."}
+```{r eda-bin-bar, fig.height=2.8, fig.cap="Prevalence of the three binary predictors. All are minority flags, and the two rarest (IDDM, CKD) carry few positive cases -- the source of the wide confidence intervals on their odds ratios."}
 bl <- do.call(rbind, lapply(c("sputum","iddm","ckd"), function(v)
   data.frame(flag = c(sputum="Sputum", iddm="IDDM", ckd="CKD")[v],
              present = factor(dat[[v]], levels=c(0,1),
@@ -265,7 +266,7 @@ weak effects.
 
 ## Missing-data analysis
 
-```{r eda-missing, echo=FALSE}
+```{r eda-missing}
 mvars <- c("o2L","temp","sputum","iddm","ckd","sev")
 miss  <- colSums(is.na(dat[mvars]))
 knitr::kable(data.frame(Variable = names(miss),
@@ -295,7 +296,7 @@ later estimate jointly. For the continuous O$_2$ predictor we use a boxplot by o
 scatter is uninformative against a binary y); for the binary flags we compare severe-illness
 rates with a simple risk difference and relative risk.
 
-```{r eda-bivar, echo=FALSE, fig.height=3.4, fig.cap="Supplemental oxygen at admission by severity outcome. Severe patients arrive on markedly more oxygen; the distribution is right-skewed with a heavy room-air (0 L/min) mass among non-severe patients."}
+```{r eda-bivar, fig.height=3.4, fig.cap="Supplemental oxygen at admission by severity outcome. Severe patients arrive on markedly more oxygen; the distribution is right-skewed with a heavy room-air (0 L/min) mass among non-severe patients."}
 bx <- data.frame(o2L = dat$o2L,
                  Outcome = factor(ifelse(dat$sev==1,"Severe","Not severe"),
                                   levels=c("Not severe","Severe")))
@@ -308,7 +309,7 @@ ggplot(bx, aes(Outcome, o2L, fill = Outcome)) +
   theme_minimal()
 ```
 
-```{r eda-temp-bivar, echo=FALSE, fig.height=3, fig.cap="Admission temperature by severity outcome. The two distributions overlap heavily -- temperature carries little marginal signal, consistent with its non-significant coefficient in the model."}
+```{r eda-temp-bivar, fig.height=3, fig.cap="Admission temperature by severity outcome. The two distributions overlap heavily -- temperature carries little marginal signal, consistent with its non-significant coefficient in the model."}
 tb <- data.frame(temp = dat$temp,
                  Outcome = factor(ifelse(dat$sev==1,"Severe","Not severe"),
                                   levels=c("Not severe","Severe")))
@@ -318,7 +319,7 @@ ggplot(tb, aes(temp, fill = Outcome)) +
   labs(x = "Admit temperature (F)", y = "Density") + theme_minimal()
 ```
 
-```{r eda-bivar-tab, echo=FALSE}
+```{r eda-bivar-tab}
 # Severe rate by each binary flag, with risk difference and relative risk.
 rateby <- function(v) {
   s <- tapply(dat$sev, dat[[v]], mean); n <- tapply(dat$sev, dat[[v]], length)
@@ -334,7 +335,7 @@ knitr::kable(tab, row.names = FALSE, booktabs = TRUE,
   caption = "Severe-illness rate by each comorbidity/symptom flag, with risk difference and relative risk. Each flag raises the severe rate substantially, foreshadowing its positive odds ratio.")
 ```
 
-```{r eda-o2-summary, echo=FALSE}
+```{r eda-o2-summary}
 o2by <- tapply(dat$o2L, dat$sev, function(x)
   c(mean = mean(x), median = median(x)))
 knitr::kable(data.frame(
@@ -361,7 +362,7 @@ A predictor's marginal association can be misleading if predictors are entangled
 modeling we check the joint structure so we know whether the odds ratios can be read as
 (reasonably) independent contributions.
 
-```{r eda-cor, echo=FALSE, fig.height=3.6, fig.cap="Pairwise Pearson correlations among the five predictors. Correlations are weak; the strongest is O2 with CKD (r = 0.32), well below any collinearity concern."}
+```{r eda-cor, fig.height=3.6, fig.cap="Pairwise Pearson correlations among the five predictors. Correlations are weak; the strongest is O2 with CKD (r = 0.32), well below any collinearity concern."}
 cm <- cor(dat[c("o2L","temp","sputum","iddm","ckd")])
 cd <- as.data.frame(as.table(cm)); names(cd) <- c("V1","V2","r")
 lab <- c(o2L="O2", temp="Temp", sputum="Sputum", iddm="IDDM", ckd="CKD")
@@ -375,7 +376,7 @@ ggplot(cd, aes(V1, V2, fill = r)) + geom_tile(color = "white") +
   theme_minimal() + theme(panel.grid = element_blank())
 ```
 
-```{r eda-vif, echo=FALSE}
+```{r eda-vif}
 # Variance inflation factors: regress each predictor on the four others.
 pcols <- c("o2L","sputum","iddm","ckd","temp")
 r2 <- sapply(pcols, function(v) {
@@ -406,7 +407,7 @@ colnames(repro) <- c("OR", "CI_low", "CI_high", "p")
 round(repro, 3)
 ```
 
-```{r match-table, echo=FALSE, results='asis'}
+```{r match-table, results='asis'}
 pub <- data.frame(
   Term      = c("Supplemental O2 (L/min)", "Sputum production", "IDDM (insulin-dep. diabetes)",
                 "Chronic kidney disease"),
@@ -609,7 +610,7 @@ logit_rank <- which(agg$model == "Logistic")
 logit_gap  <- round(max(agg$roc) - agg$roc[agg$model == "Logistic"], 3)
 ```
 
-```{r comparison-table, echo=FALSE}
+```{r comparison-table}
 knitr::kable(data.frame(Model = agg$model,
                         `ROC-AUC` = round(agg$roc, 3),
                         `PR-AUC`  = round(agg$pr, 3),
@@ -618,7 +619,7 @@ knitr::kable(data.frame(Model = agg$model,
              caption = "Held-out test-set performance (single stratified 70/30 split; every hyperparameter chosen on the training set). Base rate of severe illness ~ 0.39, so PR-AUC > 0.39 beats the no-skill line.")
 ```
 
-```{r comparison-plot, echo=FALSE, fig.cap="Held-out test-set ROC-AUC (single stratified split; all tuning on the training set only). The reproduced logistic GLM is highlighted. With n = 111 and one dominant near-linear signal, a single small test set is noisy; the ranking should be read with that in mind."}
+```{r comparison-plot, fig.cap="Held-out test-set ROC-AUC (single stratified split; all tuning on the training set only). The reproduced logistic GLM is highlighted. With n = 111 and one dominant near-linear signal, a single small test set is noisy; the ranking should be read with that in mind."}
 agg$is_base <- agg$model == "Logistic"
 ggplot(agg, aes(reorder(model, roc), roc, fill = is_base)) +
   geom_col(width = .65) +

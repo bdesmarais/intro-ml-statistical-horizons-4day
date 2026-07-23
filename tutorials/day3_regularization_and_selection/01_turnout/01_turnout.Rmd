@@ -92,7 +92,7 @@ replication file (UNC Dataverse `doi:10.15139/S3/POGNLC`), assembling state
 turnout with institutional and demographic covariates across recent election
 cycles.
 
-```{r dict, echo=FALSE}
+```{r dict}
 dict <- data.frame(
   variable = mvars,
   role = c("outcome", rep("predictor", length(preds))),
@@ -119,7 +119,7 @@ knitr::kable(dict, caption = "Variable dictionary: role, type, and coding.")
 
 ## The outcome in depth
 
-```{r outcome-stats, echo=FALSE}
+```{r outcome-stats}
 y <- d$turnout
 ostat <- data.frame(
   n = length(y), mean = mean(y), sd = sd(y), min = min(y),
@@ -129,7 +129,7 @@ knitr::kable(round(ostat, 2), row.names = FALSE,
              caption = "Turnout (%): summary statistics.")
 ```
 
-```{r outcome-plot, echo=FALSE, fig.height=2.8, fig.cap="Distribution of state lower-chamber turnout, with density overlay and mean (dashed)."}
+```{r outcome-plot, fig.height=2.8, fig.cap="Distribution of state lower-chamber turnout, with density overlay and mean (dashed)."}
 ggplot(d, aes(turnout)) +
   geom_histogram(aes(y = after_stat(density)), bins = 30,
                  fill = "#a6cee3", colour = "white") +
@@ -147,7 +147,7 @@ already well-behaved, **no transformation of the outcome is warranted** — OLS 
 
 ## Univariate predictor distributions
 
-```{r pred-stats, echo=FALSE}
+```{r pred-stats}
 ptab <- t(sapply(d[numpred], function(x) c(
   n = sum(!is.na(x)), n_miss = sum(is.na(x)), mean = mean(x), sd = sd(x),
   min = min(x), Q1 = quantile(x, .25), median = median(x),
@@ -158,7 +158,7 @@ knitr::kable(round(ptab, 2),
              caption = "Continuous predictors: summary statistics.")
 ```
 
-```{r pred-hist, echo=FALSE, fig.height=3.6, fig.cap="Distributions of the continuous predictors (faceted, free x-axes)."}
+```{r pred-hist, fig.height=3.6, fig.cap="Distributions of the continuous predictors (faceted, free x-axes)."}
 d %>% select(all_of(numpred)) %>%
   pivot_longer(everything(), names_to = "var", values_to = "val") %>%
   ggplot(aes(val)) +
@@ -172,7 +172,7 @@ Most predictors are moderately behaved; `squire` (professionalism) and `mmds`
 professional legislatures and states leaning on multimember districts. The three
 binary indicators split as follows:
 
-```{r bin-freq, echo=FALSE}
+```{r bin-freq}
 btab <- do.call(rbind, lapply(binvars, function(v) {
   t <- table(d[[v]])
   data.frame(variable = v, n_0 = t["0"], n_1 = t["1"],
@@ -182,7 +182,7 @@ knitr::kable(btab, row.names = FALSE,
              caption = "Binary predictors: frequencies and share coded 1.")
 ```
 
-```{r bin-bar, echo=FALSE, fig.height=2.2, fig.cap="Class balance of the three binary predictors."}
+```{r bin-bar, fig.height=2.2, fig.cap="Class balance of the three binary predictors."}
 d %>% select(all_of(binvars)) %>%
   pivot_longer(everything(), names_to = "var", values_to = "val") %>%
   count(var, val) %>%
@@ -194,7 +194,7 @@ d %>% select(all_of(binvars)) %>%
 
 ## Missing-data analysis
 
-```{r miss, echo=FALSE}
+```{r miss}
 miss <- data.frame(
   variable = mvars,
   n_missing = colSums(is.na(d[mvars])),
@@ -216,7 +216,7 @@ analysis set.)
 For continuous predictors we correlate each with turnout; for the binary
 indicators we compare group means with a two-sample t-test.
 
-```{r marg-num, echo=FALSE}
+```{r marg-num}
 mnum <- data.frame(
   predictor = numpred,
   r_with_turnout = sapply(d[numpred], function(x) cor(x, d$turnout)))
@@ -225,7 +225,7 @@ knitr::kable(mnum, row.names = FALSE, digits = 2,
              caption = "Continuous predictors: Pearson r with turnout.")
 ```
 
-```{r marg-bin, echo=FALSE}
+```{r marg-bin}
 mbin <- do.call(rbind, lapply(binvars, function(v) {
   g <- split(d$turnout, d[[v]])
   tt <- t.test(g[["1"]], g[["0"]])
@@ -236,7 +236,7 @@ knitr::kable(mbin, row.names = FALSE, digits = 3,
              caption = "Binary predictors: turnout means by group (diff = 1 minus 0).")
 ```
 
-```{r biv-plot, echo=FALSE, fig.height=3.4, fig.cap="Turnout vs the two strongest continuous predictors (with linear fit), and by presidential-year timing."}
+```{r biv-plot, fig.height=3.4, fig.cap="Turnout vs the two strongest continuous predictors (with linear fit), and by presidential-year timing."}
 p1 <- ggplot(d, aes(regdifficulty, turnout)) +
   geom_point(alpha = 0.35, colour = "#1f78b4") +
   geom_smooth(method = "lm", se = FALSE, colour = "#e31a1c") +
@@ -260,7 +260,7 @@ role emerges once the institutional controls are held constant in the regression
 
 ## Multivariate structure and collinearity
 
-```{r corr-heat, echo=FALSE, fig.height=4.2, fig.cap="Correlation heatmap among continuous predictors."}
+```{r corr-heat, fig.height=4.2, fig.cap="Correlation heatmap among continuous predictors."}
 cm <- cor(d[numpred])
 cmdf <- as.data.frame(as.table(cm))
 names(cmdf) <- c("v1", "v2", "r")
@@ -273,7 +273,7 @@ ggplot(cmdf, aes(v1, v2, fill = r)) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
 ```
 
-```{r vif, echo=FALSE}
+```{r vif}
 ols0 <- lm(turnout ~ ., data = d)
 X <- model.matrix(ols0)[, -1]
 vif <- sapply(colnames(X), function(v) {
@@ -387,7 +387,7 @@ plot(cv_lasso); title("lasso", line = 2.2)
 plot(cv_en);    title("elastic net", line = 2.2)
 ```
 
-```{r cv-lambdas, echo=FALSE}
+```{r cv-lambdas}
 lam <- data.frame(
   model      = c("ridge", "lasso", "elastic net"),
   lambda_min = c(cv_ridge$lambda.min, cv_lasso$lambda.min, cv_en$lambda.min),
@@ -407,7 +407,7 @@ predictors than **lambda.1se** because it chases the CV-minimizing fit rather th
 
 ## Interpreting shrinkage: coefficients side by side
 
-```{r coef-table, echo=FALSE}
+```{r coef-table}
 get_coef <- function(cvfit, s) as.numeric(coef(cvfit, s = s))[-1]  # drop intercept
 ctab <- data.frame(
   predictor  = preds,
@@ -472,7 +472,7 @@ ggplot(gic, aes(size, gic)) +
   labs(x = "support size (number of predictors)", y = "abess tuning criterion")
 ```
 
-```{r selection-contrast, echo=FALSE}
+```{r selection-contrast}
 lasso_keep <- preds[get_coef(cv_lasso, "lambda.1se") != 0]
 en_keep    <- preds[get_coef(cv_en,    "lambda.1se") != 0]
 sel <- data.frame(
@@ -561,7 +561,7 @@ knitr::kable(round(res, 3),
              caption = "Held-out performance (test n = 30% of states): RMSE (points) and R^2.")
 ```
 
-```{r oos-plot, echo=FALSE, fig.height=3.2, fig.cap="Test-set RMSE by method (lower is better). Regularization/selection is measured against the OLS baseline."}
+```{r oos-plot, fig.height=3.2, fig.cap="Test-set RMSE by method (lower is better). Regularization/selection is measured against the OLS baseline."}
 rdf <- data.frame(method = rownames(res), RMSE = res[, "RMSE"])
 rdf$method <- factor(rdf$method, levels = rdf$method[order(rdf$RMSE)])
 ggplot(rdf, aes(method, RMSE)) +

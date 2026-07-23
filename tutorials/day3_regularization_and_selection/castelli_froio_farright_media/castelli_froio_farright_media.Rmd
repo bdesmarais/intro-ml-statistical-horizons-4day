@@ -15,7 +15,7 @@ header-includes:
 
 ```{r setup, include=FALSE}
 options(width = 80)
-knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE,
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
                       fig.align = "center", fig.width = 6.5, fig.height = 4)
 set.seed(20240607)
 ```
@@ -151,15 +151,15 @@ statement must be read against --- with a 12.6% positive rate, a trivial
 evaluate the extension on **ROC-AUC** and **PR-AUC** instead. The base rate is also
 the no-skill floor for PR-AUC.
 
-```{r eda-outcome, fig.width=6, fig.height=3.2}
+```{r eda-outcome, fig.width=5.8, fig.height=2.4}
 y_cc <- as.integer(mm$mediahit1)
 tb   <- table(factor(y_cc, levels = c(0, 1),
                       labels = c("No coverage (0)", "Covered (1)")))
 base_rate_eda <- mean(y_cc)
-par(mar = c(4, 6, 2, 1))
+par(mar = c(4, 8.5, 2.2, 1), cex.main = 1)
 bp <- barplot(tb, horiz = TRUE, las = 1, col = c("grey70", "firebrick"),
-              xlab = "Number of events",
-              main = sprintf("Outcome class balance (base rate = %.1f%% covered)",
+              xlab = "Number of events", cex.names = 0.95,
+              main = sprintf("Class balance: %.1f%% of events covered",
                              100 * base_rate_eda))
 text(tb / 2, bp, labels = tb, col = "white", font = 2)
 ```
@@ -573,10 +573,10 @@ fit_ridge <- glmnet(X, y, family = "binomial", alpha = 0,   standardize = TRUE)
 fit_lasso <- glmnet(X, y, family = "binomial", alpha = 1,   standardize = TRUE)
 fit_enet  <- glmnet(X, y, family = "binomial", alpha = 0.5, standardize = TRUE)
 
-par(mfrow = c(3, 1), mar = c(4, 4, 2.5, 1))
-plot(fit_ridge, xvar = "lambda", label = FALSE); title("Ridge (alpha = 0)", line = 1.2)
-plot(fit_lasso, xvar = "lambda", label = FALSE); title("Lasso (alpha = 1)", line = 1.2)
-plot(fit_enet,  xvar = "lambda", label = FALSE); title("Elastic net (alpha = 0.5)", line = 1.2)
+par(mfrow = c(3, 1), mar = c(4, 4, 4, 1))
+plot(fit_ridge, xvar = "lambda", label = FALSE); title("Ridge (alpha = 0)", line = 3)
+plot(fit_lasso, xvar = "lambda", label = FALSE); title("Lasso (alpha = 1)", line = 3)
+plot(fit_enet,  xvar = "lambda", label = FALSE); title("Elastic net (alpha = 0.5)", line = 3)
 ```
 
 Reading the paths from right (large $\lambda$, everything shrunk toward zero) to
@@ -693,11 +693,10 @@ contrast <- data.frame(
   `abess`       = ifelse(allvars %in% ab_support,   "kept", "."),
   check.names = FALSE
 )
-# show only rows kept by at least one method, plus a couple always-dropped for context
-keep_rows <- contrast$`Lasso (1se)` == "kept" | contrast$abess == "kept"
-knitr::kable(contrast[keep_rows, ], row.names = FALSE, align = "lcc",
+knitr::kable(contrast, row.names = FALSE, align = "lcc",
   caption = paste0("Support comparison: predictors kept by lasso (lambda.1se) vs. ",
-  "abess best-subset. Rows dropped by both methods are omitted."))
+  "abess best-subset, over all design columns. '.' = dropped; rows with two ",
+  "dots are dropped by both methods."))
 ```
 
 The two selection principles **largely agree** on the core support ---
