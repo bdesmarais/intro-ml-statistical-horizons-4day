@@ -56,7 +56,7 @@ We (1) reproduce this regression exactly, then (2) turn it into a **Day-4 tour o
 classic supervised learners** --- a decision tree, a random forest, gradient boosting,
 support-vector machines, and k-nearest-neighbours --- holding the *same outcome and the
 same predictors* fixed, and compare them all on a held-out test set. We close with
-model-agnostic **interpretation** (permutation importance and partial dependence).
+model-agnostic **interpretation** (permutation importance, partial dependence, and SHAP).
 
 ```{r clean}
 # ---- Load raw survey and reproduce the authors' cleaning pipeline verbatim ----
@@ -745,7 +745,7 @@ terms but consistent across the flexible learners, and they come from a specific
 place: curvature (notably in `years_lived`) that the additive linear model assumes
 away --- which the next section makes explicit.
 
-# Interpretation: permutation importance + partial dependence
+# Interpretation: permutation importance, partial dependence, SHAP
 
 Flexible learners are not black boxes. Two model-agnostic tools open them up:
 **permutation importance** (how much test error rises when a predictor's values are
@@ -792,6 +792,52 @@ the first years of residence, then flattens and can tick back up). This curvatur
 invisible to the additive linear model, is exactly the structure the tree ensembles use
 to edge past OLS on held-out data.
 
+Partial dependence averages over the whole sample; **SHAP values** (SHapley Additive
+exPlanations) decompose *each respondent's* prediction exactly into one additive
+contribution per predictor. For tree ensembles they are computed exactly (TreeSHAP),
+and xgboost returns them natively via `predcontrib = TRUE`. We compute them for the
+training-set boosting model `xgb_fit` --- the test set stays untouched here too.
+
+```{r shap, fig.width=7, fig.height=3.4, fig.cap="Left: SHAP summary for the xgboost model (training rows); each point is one respondent, x = that predictor's additive contribution to predicted trust, colour = the predictor's value (blue low, red high). Right: SHAP dependence for years lived at residence --- the per-respondent contributions trace the same steep-early-drop-then-flatten shape as the partial-dependence curve."}
+shap <- predict(xgb_fit, dtrain, predcontrib = TRUE)
+shap <- shap[, colnames(Xtr)]   # drop the BIAS column
+shap_df <- do.call(rbind, lapply(colnames(Xtr), function(v) {
+  val <- Xtr[, v]
+  data.frame(var = v, shap = shap[, v],
+             sval = (val - min(val)) / (max(val) - min(val)))
+}))
+shap_df$var <- factor(shap_df$var, levels = names(sort(colMeans(abs(shap)))))
+p1 <- ggplot(shap_df, aes(shap, var, colour = sval)) +
+  geom_jitter(height = 0.22, width = 0, size = 0.7, alpha = 0.5) +
+  scale_colour_gradient(low = "steelblue", high = "firebrick",
+                        breaks = c(0, 1), labels = c("low", "high"),
+                        name = "predictor\nvalue") +
+  geom_vline(xintercept = 0, linetype = 3) +
+  labs(x = "SHAP contribution to predicted trust", y = NULL,
+       title = "SHAP summary") +
+  theme_bw(base_size = 10)
+p2 <- ggplot(data.frame(x = Xtr[, "years_lived"], s = shap[, "years_lived"]),
+             aes(x, s)) +
+  geom_point(alpha = 0.35, size = 0.8, colour = "#6a3d9a") +
+  geom_smooth(se = FALSE, colour = "#e31a1c", linewidth = 0.9, method = "loess",
+              formula = y ~ x) +
+  geom_hline(yintercept = 0, linetype = 3) +
+  labs(x = "Years lived at residence", y = "SHAP value",
+       title = "SHAP dependence: years_lived") +
+  theme_bw(base_size = 10)
+if (requireNamespace("gridExtra", quietly = TRUE)) {
+  gridExtra::grid.arrange(p1, p2, ncol = 2, widths = c(1.15, 1))
+} else { print(p1); print(p2) }
+```
+
+The SHAP summary retells the importance story respondent by respondent --- the widest
+spreads of contributions belong to the same predictors the permutation ranking puts on
+top --- and the dependence panel shows *why* `years_lived` matters to the ensemble:
+strongly negative contributions in the first years of residence that fade toward zero
+as tenure grows, the per-respondent counterpart of the partial-dependence curve.
+Because the contributions are additive, any one respondent's predicted trust reads as
+the model's baseline plus these per-predictor pushes.
+
 # Takeaway
 
 The published OLS reproduces exactly (`non_sindhi` \(= -0.777\), `under30` \(= -0.554\))
@@ -806,8 +852,8 @@ predictive gains over a well-specified OLS are moderate --- the forest trims RMS
 about 7\% and lifts out-of-sample $R^2$ from 0.17 to 0.27 --- and that *is* the Day-4
 lesson: the flexible learners help precisely where the linear model's **functional
 form** is wrong (the nonlinear `years_lived` effect the partial-dependence plot
-exposes), and add little where it is right. Interpretation tools --- permutation importance and partial
-dependence --- let us see that structure rather than take the ensemble's word for it.
+exposes), and add little where it is right. Interpretation tools --- permutation importance, partial
+dependence, and SHAP --- let us see that structure rather than take the ensemble's word for it.
 
 # Independent exercises (each about 10 minutes)
 

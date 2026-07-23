@@ -650,7 +650,7 @@ ggplot(agg, aes(reorder(model, roc), roc, fill = is_base)) +
   theme_minimal()
 ```
 
-## Interpretation: permutation importance and partial dependence
+## Interpretation: permutation importance, partial dependence, and SHAP
 
 We interpret the **same forest tuned and fit on the training set above** (`rf1`) ---
 no refitting on the full cohort, so the held-out test set plays no role in this
@@ -683,6 +683,45 @@ ggplot(pdp, aes(x, phat)) + geom_line(color = "firebrick", linewidth = 1) +
   labs(x = NULL, y = "Partial dependence: P(severe)") + theme_minimal()
 ```
 
+Permutation importance says *how much* a predictor matters overall; **SHAP values**
+(SHapley Additive exPlanations) say *how each patient's prediction was assembled*: the
+predicted log-odds is decomposed exactly into one additive contribution per predictor.
+For tree ensembles these are computed exactly (TreeSHAP), and xgboost returns them
+natively via `predcontrib = TRUE`. We compute them for the training-set boosting model
+`xgb1` --- the test set again plays no role.
+
+```{r shap, fig.width=6.2, fig.height=3, fig.cap="SHAP summary for the xgboost model (training rows). Each point is one patient; x = that predictor's additive contribution to the log-odds of severe illness; colour = the predictor's value (blue low, red high)."}
+shap <- predict(xgb1, dtr, predcontrib = TRUE)
+shap <- shap[, X_cols]   # drop the BIAS column
+shap_df <- do.call(rbind, lapply(X_cols, function(v) {
+  val <- tr1[[v]]
+  data.frame(var = v, shap = shap[, v],
+             sval = (val - min(val)) / (max(val) - min(val)))
+}))
+shap_df$var <- factor(shap_df$var, levels = names(sort(colMeans(abs(shap)))))
+ggplot(shap_df, aes(shap, var, colour = sval)) +
+  geom_jitter(height = 0.22, width = 0, size = 1, alpha = 0.7) +
+  scale_colour_gradient(low = "steelblue", high = "firebrick",
+                        breaks = c(0, 1), labels = c("low", "high"),
+                        name = "predictor\nvalue") +
+  geom_vline(xintercept = 0, linetype = 3) +
+  labs(x = "SHAP contribution to log-odds(severe)", y = NULL,
+       title = "SHAP summary (xgboost, training rows)") +
+  theme_minimal()
+shap_top <- colnames(shap)[which.max(colMeans(abs(shap)))]
+```
+
+The SHAP summary explains the *boosted* model patient by patient, and setting it
+against the forest's permutation ranking teaches its own lesson: two
+similarly-performing ensembles can distribute the same signal differently. The forest
+leaned almost entirely on supplemental O$_2$; the shallow boosted trees put their
+largest average contribution on **`r shap_top`**, with high O$_2$ flows still
+delivering large individual pushes toward severe and room-air admissions pulling
+predictions down. All shifts run in the direction the published odds ratios predict.
+Because the contributions are additive, any single patient's predicted risk can be
+read as the model's baseline plus these per-predictor pushes --- the per-patient
+counterpart of the average curves above.
+
 # Takeaway
 
 The published logistic model reproduces **exactly** (Table 4 odds ratios matched to three
@@ -693,9 +732,11 @@ forest, xgboost, SVM (RBF/linear), and CV-tuned k-NN —
 (`r if (logit_rank == 1) sprintf("the logistic in fact posts the highest test ROC-AUC of all %d models", nrow(agg)) else sprintf("the logistic finishes %.3f ROC-AUC behind the best of the %d models, well within what a 34-patient test set can distinguish", logit_gap, nrow(agg))`);
 the strongest signal (admission oxygen
 requirement) is close to linear on the log-odds scale, so flexible boundaries mostly add variance.
-What ML *does* add here is confirmatory interpretation: permutation importance and the
-partial-dependence curves independently rank supplemental O$_2$ (then the comorbidity flags) as the
-dominant risk factors, and reveal a saturating O$_2$ effect — a teaching illustration that, in
+What ML *does* add here is interpretation: permutation importance and the
+partial-dependence curves rank supplemental O$_2$ (then the comorbidity flags) as the
+dominant risk factors and reveal a saturating O$_2$ effect, while the per-patient SHAP
+decomposition shows the boosted model spreading more of that weight onto the
+comorbidity flags — a teaching illustration that, in
 small clinical cohorts with a well-specified regression, the honest ML lesson is often "the GLM was
 already good," with the learners earning their keep as an interpretation cross-check rather than a
 prediction win.
