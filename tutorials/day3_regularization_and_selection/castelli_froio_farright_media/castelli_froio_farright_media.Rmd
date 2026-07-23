@@ -824,6 +824,96 @@ and abess reach the same predictive frontier while retaining only
 and they agree on which ones matter. Selection here is a tool for **parsimony and
 interpretability**, not for squeezing out extra AUC.
 
+## Are the tiny differences real? Bootstrapping the whole pipeline
+
+The held-out table put all five models within a whisker of one another --- but that
+was **one** 70/30 split, and a single split cannot say whether the small gaps are
+signal or split noise. The honest check re-runs the *entire* pipeline --- resample
+the data, split, tune every penalty by CV on the training fold, predict the test
+fold --- on $B = 500$ bootstrap resamples, and tracks the **difference** in test
+ROC-AUC and PR-AUC between each penalized model and the logit *within each
+resample*. The 2.5th and 97.5th percentiles of those 500 differences form a 95\%
+interval: if it covers zero, the gap is indistinguishable from noise. Two
+speed-ups keep this tractable (and are themselves good practice): the elastic-net
+mix is held at the previously tuned `best_alpha_tr` rather than re-tuned 500
+times, and the inner CVs use 5 folds. We also time the loop with `Sys.time()` ---
+always worth doing before you scale a computation up.
+
+```{r boot-diff}
+t_start <- Sys.time()
+set.seed(20240607)
+B <- 500
+methods <- c("Ridge", "Lasso", "Elastic net", "abess")
+diffs <- array(NA_real_, dim = c(B, 4, 2),
+               dimnames = list(NULL, methods, c("roc", "pr")))
+for (b in 1:B) {
+  ## 1. bootstrap resample of the complete-case data
+  ii  <- sample(nrow(D), replace = TRUE)
+  Db  <- D[ii, ]; Xb <- X[ii, ]; yb <- y[ii]
+  ## 2. fresh stratified 70/30 split inside the resample
+  posb <- which(yb == 1); negb <- which(yb == 0)
+  trb <- c(sample(posb, floor(.7 * length(posb))),
+           sample(negb, floor(.7 * length(negb))))
+  teb <- setdiff(seq_along(yb), trb)
+  yteb <- yb[teb]
+  ## 3. re-tune and predict: logit baseline + the four penalized/selected models
+  p_lo <- suppressWarnings(predict(glm(form, data = Db[trb, ], family = binomial),
+                                   newdata = Db[teb, ], type = "response"))
+  p_ri <- as.numeric(predict(cv.glmnet(Xb[trb, ], yb[trb], family = "binomial",
+                                       alpha = 0, nfolds = 5),
+                             Xb[teb, ], s = "lambda.min", type = "response"))
+  p_la <- as.numeric(predict(cv.glmnet(Xb[trb, ], yb[trb], family = "binomial",
+                                       alpha = 1, nfolds = 5),
+                             Xb[teb, ], s = "lambda.1se", type = "response"))
+  p_en <- as.numeric(predict(cv.glmnet(Xb[trb, ], yb[trb], family = "binomial",
+                                       alpha = best_alpha_tr, nfolds = 5),
+                             Xb[teb, ], s = "lambda.min", type = "response"))
+  p_ab <- as.numeric(predict(abess(Xb[trb, ], yb[trb], family = "binomial",
+                                   tune.type = "cv", nfolds = 5),
+                             Xb[teb, ], type = "response"))
+  ## 4. within-resample differences vs. the logit
+  base_roc <- roc_auc(p_lo, yteb); base_pr <- pr_auc(p_lo, yteb)
+  preds <- list(p_ri, p_la, p_en, p_ab)
+  for (m in 1:4) {
+    diffs[b, m, "roc"] <- roc_auc(preds[[m]], yteb) - base_roc
+    diffs[b, m, "pr"]  <- pr_auc(preds[[m]],  yteb) - base_pr
+  }
+}
+runtime <- Sys.time() - t_start
+cat(sprintf("B = %d full pipeline replications in %.1f minutes (%.2f sec each)\n",
+            B, as.numeric(runtime, units = "mins"),
+            as.numeric(runtime, units = "secs") / B))
+```
+
+```{r boot-diff-table, results='asis'}
+ci_tab <- do.call(rbind, lapply(methods, function(m) {
+  dr <- diffs[, m, "roc"]; dp <- diffs[, m, "pr"]
+  data.frame(Model = m,
+             `Mean dROC`  = sprintf("%+.3f", mean(dr)),
+             `dROC 95% CI` = sprintf("[%+.3f, %+.3f]",
+                                     quantile(dr, .025), quantile(dr, .975)),
+             `Mean dPR`   = sprintf("%+.3f", mean(dp)),
+             `dPR 95% CI`  = sprintf("[%+.3f, %+.3f]",
+                                     quantile(dp, .025), quantile(dp, .975)),
+             check.names = FALSE)
+}))
+knitr::kable(ci_tab, row.names = FALSE, align = "lrrrr",
+  caption = paste0("Bootstrap differences vs. the unpenalized logit over B = 500 ",
+  "re-runs of the full split-tune-predict pipeline (positive = penalized model ",
+  "better). 95% intervals are the 2.5th and 97.5th percentiles of the ",
+  "within-resample differences."))
+```
+
+```{r boot-diff-verdict, include=FALSE}
+covers0 <- sapply(methods, function(m)
+  all(sapply(c("roc", "pr"), function(k)
+    quantile(diffs[, m, k], .025) <= 0 & quantile(diffs[, m, k], .975) >= 0)))
+n_cover <- sum(covers0)
+```
+
+`r if (n_cover == 4) "Every one of the eight intervals covers zero" else sprintf("%d of the four models have both intervals covering zero", n_cover)`
+--- so the sharpened conclusion is `r if (n_cover == 4) "exactly the one the single split suggested: on these data, no penalized or selected model is distinguishable from the plain logit on either metric. The value of penalization here is parsimony, not accuracy, and now that claim carries an interval rather than a hunch" else "more nuanced than the single split suggested: where an interval excludes zero, the gap is real, small as it is"`.
+
 # Takeaway
 
 The published logit reproduces exactly (immigration-focus $0.6347$,
