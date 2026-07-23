@@ -333,9 +333,17 @@ tr <- setdiff(seq_len(nrow(d)), te); yte <- y[te]
 m_logit <- glm(fatal ~ ., data = d[tr, c("fatal", preds)], family = binomial)
 test_auc <- c(Logit = aucpr(predict(m_logit, d[te, ], type = "response"), yte))
 
-## 2. Elastic net -- penalty lambda tuned by CV on the TRAINING set
-m_en <- cv.glmnet(X[tr, ], y[tr], alpha = 0.5, family = "binomial")
-test_auc["ElasticNet"] <- aucpr(as.numeric(predict(m_en, X[te, ], s = "lambda.min", type = "response")), yte)
+## 2. Penalized logits (Day 3's toolkit): ridge, lasso, elastic net --
+##    penalty lambda tuned by CV on the TRAINING set
+##    (ridge needs an extended lambda path: glmnet's default path for alpha = 0
+##     stops at a fairly large lambda, which silently over-shrinks when n >> p)
+m_ridge <- cv.glmnet(X[tr, ], y[tr], alpha = 0,   family = "binomial",
+                     lambda.min.ratio = 1e-6)
+m_lasso <- cv.glmnet(X[tr, ], y[tr], alpha = 1,   family = "binomial")
+m_en    <- cv.glmnet(X[tr, ], y[tr], alpha = 0.5, family = "binomial")
+test_auc["Ridge"]      <- aucpr(as.numeric(predict(m_ridge, X[te, ], s = "lambda.min", type = "response")), yte)
+test_auc["Lasso"]      <- aucpr(as.numeric(predict(m_lasso, X[te, ], s = "lambda.min", type = "response")), yte)
+test_auc["ElasticNet"] <- aucpr(as.numeric(predict(m_en,    X[te, ], s = "lambda.min", type = "response")), yte)
 
 ## 3. Random forest -- mtry tuned on the TRAINING set by out-of-bag AUC-PR
 best_rf <- NULL
@@ -344,8 +352,9 @@ for (mt in unique(pmax(1, c(floor(sqrt(ncol(X))), floor(ncol(X) / 3), floor(ncol
   sc <- aucpr(rf$predictions[, "1"], y[tr])          # OOB predictions = a training-only CV estimate
   if (is.null(best_rf) || sc > best_rf$sc) best_rf <- list(mtry = mt, sc = sc)
 }
-m_rf <- ranger(x = X[tr, ], y = factor(y[tr]), num.trees = 800, mtry = best_rf$mtry, probability = TRUE)
-test_auc["RandomForest"] <- aucpr(predict(m_rf, X[te, ])$predictions[, "1"], yte)
+m_rf <- ranger(x = X[tr, ], y = factor(y[tr]), num.trees = 800, mtry = best_rf$mtry, probability = TRUE,
+               importance = "permutation")
+test_auc["RF"] <- aucpr(predict(m_rf, X[te, ])$predictions[, "1"], yte)
 
 ## 4. XGBoost -- depth x eta tuned by xgb.cv on the TRAINING set; nrounds by early stopping
 dtrain <- xgb.DMatrix(X[tr, ], label = y[tr])
@@ -371,28 +380,35 @@ cat(sprintf("Best ML gain over the logistic RSF on the held-out test set: +%.3f 
 
 ```{r cv-plot, fig.height=3, fig.cap="Held-out test-set AUC-PR (higher is better). Grey = published logistic RSF; blue = best ML."}
 par(mar = c(4, 4, 2.5, 1))
-cols <- c("grey70", "#a6cee3", "#a6cee3", "#a6cee3"); cols[which.max(test_auc[-1]) + 1] <- "#1f78b4"
-bp <- barplot(test_auc, col = cols, ylim = c(0, 1.12), ylab = "AUC-PR", main = "Militarized disputes: held-out test AUC-PR by model")
+cols <- c("grey70", rep("#a6cee3", length(test_auc) - 1)); cols[which.max(test_auc[-1]) + 1] <- "#1f78b4"
+bp <- barplot(test_auc, col = cols, ylim = c(0, 1.12), ylab = "AUC-PR", cex.names = 0.8,
+              main = "Militarized disputes: held-out test AUC-PR by model")
 text(bp, test_auc, sprintf("%.3f", test_auc), pos = 3, cex = 0.85)
 ```
 
-The learners lift AUC-PR notably over the additive logit by capturing interactions among contiguity, power
-asymmetry, democracy and recent peace.
+The tree ensembles lift AUC-PR notably over the additive logit by capturing interactions among contiguity,
+power asymmetry, democracy and recent peace. The **penalized logits add nothing here** --- with
+$n \approx 14{,}000$ training dyads and only 11 predictors, cross-validation drives the penalty essentially
+to zero and lasso/elastic net ride the plain logit, exactly Day 3's lesson about *when* regularization pays
+run in reverse. (Ridge sits a touch lower still: the near-collinear peace-years spline block resists
+ridge's grouped shrinkage. Note the `lambda.min.ratio` argument above --- glmnet's default ridge path
+stops at a fairly large $\lambda$, and without extending it ridge is silently over-shrunk.)
 
 # Interpreting the model: importance, SHAP, and partial dependence
 
+We interpret the **same models we tuned and fit on the training set above** (`m_rf`,
+`m_xgb`) --- no refitting on the full data, so the held-out test set plays no role in
+this section either.
+
 ```{r interp-fit}
-rf <- ranger(x = X, y = factor(y), num.trees = 500, probability = TRUE, importance = "permutation")
-xgb <- xgb.train(params = list(objective = "binary:logistic", max_depth = 4, eta = 0.05,
-                               subsample = 0.9, colsample_bytree = 0.8),
-                 data = xgb.DMatrix(X, label = y), nrounds = 300, verbose = 0)
-shap <- predict(xgb, X, predcontrib = TRUE)   # last column is the model bias
-shap <- shap[, colnames(X)]                    # drop the BIAS column
+Xtr  <- X[tr, ]
+shap <- predict(m_xgb, Xtr, predcontrib = TRUE)   # last column is the model bias
+shap <- shap[, colnames(X)]                        # drop the BIAS column
 ```
 
 ```{r imp-plot, fig.height=3.2, fig.cap="Permutation importance (left) and SHAP importance (right)."}
 par(mfrow = c(1, 2), mar = c(4, 7, 2.5, 1))
-imp_rf <- tail(sort(rf$variable.importance), 8)
+imp_rf <- tail(sort(m_rf$variable.importance), 8)
 barplot(imp_rf, horiz = TRUE, las = 1, names.arg = clean(names(imp_rf)), cex.names = 0.8,
         col = "#33a02c", main = "RF importance", xlab = "permutation importance")
 imp_sh <- tail(sort(colMeans(abs(shap))), 8)
@@ -409,7 +425,7 @@ plot(NA, xlim = range(shap[, top]), ylim = c(0.5, length(top) + 0.5), yaxt = "n"
 abline(v = 0, col = "grey70"); axis(2, seq_along(top), clean(rev(top)), las = 1, cex.axis = 0.75)
 for (i in seq_along(top)) {
   v <- rev(top)[i]
-  val <- (X[s, v] - min(X[, v])) / (max(X[, v]) - min(X[, v]))
+  val <- (Xtr[s, v] - min(Xtr[, v])) / (max(Xtr[, v]) - min(Xtr[, v]))
   points(shap[s, v], i + runif(length(s), -0.25, 0.25), pch = 16, cex = 0.5,
          col = rgb(val, 0.15, 1 - val, 0.45))
 }
@@ -425,14 +441,14 @@ little recent peace.
 
 ```{r pdp, fig.height=3.2, fig.cap="Partial dependence (left) and SHAP dependence (right) for peace-years."}
 par(mfrow = c(1, 2), mar = c(4, 4.2, 2.5, 1))
-grid <- seq(quantile(d$peaceyears, .02), quantile(d$peaceyears, .98), length.out = 50)
-nd <- matrix(apply(X, 2, median), nrow = 50, ncol = ncol(X), byrow = TRUE, dimnames = list(NULL, colnames(X)))
+grid <- seq(quantile(Xtr[, "peaceyears"], .02), quantile(Xtr[, "peaceyears"], .98), length.out = 50)
+nd <- matrix(apply(Xtr, 2, median), nrow = 50, ncol = ncol(X), byrow = TRUE, dimnames = list(NULL, colnames(X)))
 nd[, "peaceyears"] <- grid
 plot(grid, predict(m_rf, nd)$predictions[, "1"], type = "l", lwd = 2.5, col = "#1f78b4",
      xlab = "peaceyears", ylab = "P(fatal)", main = "Partial dependence")
-plot(X[s, "peaceyears"], shap[s, "peaceyears"], pch = 16, col = rgb(.42, .24, .60, .3),
+plot(Xtr[s, "peaceyears"], shap[s, "peaceyears"], pch = 16, col = rgb(.42, .24, .60, .3),
      xlab = "peaceyears", ylab = "SHAP value", main = "SHAP dependence")
-lines(lowess(X[, "peaceyears"], shap[, "peaceyears"], f = 0.5), col = "#e31a1c", lwd = 2.5)
+lines(lowess(Xtr[, "peaceyears"], shap[, "peaceyears"], f = 0.5), col = "#e31a1c", lwd = 2.5)
 abline(h = 0, lty = 2, col = "grey60")
 ```
 

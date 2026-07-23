@@ -5,8 +5,7 @@ author: "Day 4 — Classic Learners & Interpretation"
 date: "`r format(Sys.Date())`"
 output:
   pdf_document:
-    toc: true
-    toc_depth: 2
+    toc: false
     number_sections: true
     fig_caption: true
 header-includes:
@@ -28,6 +27,7 @@ set.seed(2024)
 suppressMessages({
   library(readxl); library(ggplot2)
   library(rpart);  library(rpart.plot)
+  library(glmnet)
   library(ranger); library(xgboost)
   library(e1071);  library(class); library(kknn)
   library(pROC)
@@ -573,7 +573,14 @@ cat("CV-chosen k =", best_k, "\n")
 
 Every hyperparameter above was chosen on the training set alone: the SVM's cost and
 gamma by 5-fold CV, k-NN's k by 5-fold CV, and fixed declared settings for the tree,
-forest, and boosting. We now fit each final model on the full training set and score
+forest, and boosting. We also carry forward **Day 3's penalized logits** --- a ridge
+and a lasso with $\lambda$ tuned by `cv.glmnet` on the training rows only. One
+small-sample detail matters here: with only $\approx 78$ training rows we **stratify
+the CV folds by outcome**. In an unstratified draw the fold class balances wobble
+enough that roughly a third of the time the lasso's CV curve picks a wildly
+over-shrunk $\lambda$ that zeroes out four of the five predictors --- a concrete
+reminder from Day 3 that on small samples the CV *protocol*, not just the penalty,
+drives what survives. We now fit each final model on the full training set and score
 all of them, plus the reproduced logistic baseline, **once** on the 30\% test set.
 
 ```{r comparison}
@@ -582,6 +589,17 @@ sc1 <- scale_train(tr1, te1, c("o2L","temp"))
 # logistic baseline (reproduced specification)
 gl <- suppressWarnings(glm(sev ~ o2L+sputum+iddm+ckd+temp, data = tr1, family = binomial))
 p_glm <- predict(gl, te1, type = "response")
+
+# Day 3's penalized logits: ridge and lasso, lambda CV-tuned on the training set
+# only, with CV folds stratified by outcome (like the train/test split itself)
+Xtr_m <- as.matrix(tr1[, X_cols]); Xte_m <- as.matrix(te1[, X_cols])
+foldid <- integer(nrow(tr1))
+foldid[tr1$sev == 1] <- sample(rep(1:5, length.out = sum(tr1$sev == 1)))
+foldid[tr1$sev == 0] <- sample(rep(1:5, length.out = sum(tr1$sev == 0)))
+cv_r <- cv.glmnet(Xtr_m, tr1$sev, alpha = 0, family = "binomial", foldid = foldid)
+cv_l <- cv.glmnet(Xtr_m, tr1$sev, alpha = 1, family = "binomial", foldid = foldid)
+p_ridge <- as.numeric(predict(cv_r, Xte_m, s = "lambda.min", type = "response"))
+p_lasso <- as.numeric(predict(cv_l, Xte_m, s = "lambda.min", type = "response"))
 
 # tree / forest / boosting fits from above, scored on the test set
 p_tree <- predict(tree, te1)[, "yes"]
@@ -600,7 +618,8 @@ km <- kknn(y ~ o2L+sputum+iddm+ckd+temp, train = sc1$tr, test = sc1$te,
            k = best_k, kernel = "rectangular")
 p_knn <- km$prob[, "yes"]
 
-probs <- list(Logistic = p_glm, Tree = p_tree, RandomForest = p_rf, XGBoost = p_xgb,
+probs <- list(Logistic = p_glm, Ridge = p_ridge, Lasso = p_lasso,
+              Tree = p_tree, RandomForest = p_rf, XGBoost = p_xgb,
               `SVM-RBF (tuned)` = p_rbf_t, `SVM-linear` = p_lin_t, kNN = p_knn)
 agg <- data.frame(model = names(probs),
                   roc = sapply(probs, function(p) roc_auc(te1$sev, p)),
@@ -633,10 +652,12 @@ ggplot(agg, aes(reorder(model, roc), roc, fill = is_base)) +
 
 ## Interpretation: permutation importance and partial dependence
 
-```{r perm-importance, fig.cap="Permutation importance (ranger) on the full cohort: mean decrease in accuracy when each predictor is shuffled."}
-rf_full <- ranger(y ~ o2L+sputum+iddm+ckd+temp, data = dat, num.trees = 1500,
-                  probability = TRUE, importance = "permutation", min.node.size = 5)
-imp <- sort(ranger::importance(rf_full), decreasing = TRUE)
+We interpret the **same forest tuned and fit on the training set above** (`rf1`) ---
+no refitting on the full cohort, so the held-out test set plays no role in this
+section either.
+
+```{r perm-importance, fig.cap="Permutation importance from the training-set random forest: mean decrease in accuracy when each predictor is shuffled."}
+imp <- sort(ranger::importance(rf1), decreasing = TRUE)
 ggplot(data.frame(var = names(imp), imp = as.numeric(imp)),
        aes(reorder(var, imp), imp)) +
   geom_col(fill = "steelblue") + coord_flip() +
@@ -644,18 +665,18 @@ ggplot(data.frame(var = names(imp), imp = as.numeric(imp)),
   theme_minimal()
 ```
 
-```{r pdp, fig.cap="Partial-dependence of predicted P(severe) on the two most important predictors, holding the others at their mean/mode. Rug shows observed values. The O2 curve rises steeply then saturates -- a mildly nonlinear effect the logistic model captures only as a straight log-odds slope."}
+```{r pdp, fig.cap="Partial-dependence of predicted P(severe) on the two most important predictors, holding the others at their training-set mean/mode. The O2 curve rises steeply then saturates -- a mildly nonlinear effect the logistic model captures only as a straight log-odds slope."}
 pdp_curve <- function(model, var, grid) {
-  base <- dat[rep(1, length(grid)), X_cols]
+  base <- tr1[rep(1, length(grid)), X_cols]
   for (cc in X_cols) base[[cc]] <- if (cc %in% c("sputum","iddm","ckd"))
-    as.numeric(names(sort(table(dat[[cc]]), decreasing = TRUE))[1]) else mean(dat[[cc]])
+    as.numeric(names(sort(table(tr1[[cc]]), decreasing = TRUE))[1]) else mean(tr1[[cc]])
   base[[var]] <- grid
   data.frame(x = grid, phat = predict(model, base)$predictions[, "yes"], var = var)
 }
-o2_grid   <- seq(min(dat$o2L), quantile(dat$o2L, .98), length.out = 60)
-temp_grid <- seq(quantile(dat$temp,.02), quantile(dat$temp,.98), length.out = 60)
-pdp <- rbind(pdp_curve(rf_full, "o2L", o2_grid),
-             pdp_curve(rf_full, "temp", temp_grid))
+o2_grid   <- seq(min(tr1$o2L), quantile(tr1$o2L, .98), length.out = 60)
+temp_grid <- seq(quantile(tr1$temp,.02), quantile(tr1$temp,.98), length.out = 60)
+pdp <- rbind(pdp_curve(rf1, "o2L", o2_grid),
+             pdp_curve(rf1, "temp", temp_grid))
 ggplot(pdp, aes(x, phat)) + geom_line(color = "firebrick", linewidth = 1) +
   facet_wrap(~var, scales = "free_x",
              labeller = as_labeller(c(o2L = "Supplemental O2 (L/min)", temp = "Admit temp (F)"))) +
@@ -666,9 +687,10 @@ ggplot(pdp, aes(x, phat)) + geom_line(color = "firebrick", linewidth = 1) +
 
 The published logistic model reproduces **exactly** (Table 4 odds ratios matched to three
 decimals), anchoring the ML extension in a trustworthy baseline. On this small n $=$ `r nrow(dat)`
-cohort the classic learners — tree, random forest, xgboost, SVM (RBF/linear), and CV-tuned k-NN —
+cohort Day 3's penalized logits (ridge, lasso) and the classic learners — tree, random
+forest, xgboost, SVM (RBF/linear), and CV-tuned k-NN —
 **are not clearly better than the logistic GLM** on the held-out test set
-(`r if (logit_rank == 1) "the logistic in fact posts the highest test ROC-AUC of all seven models" else sprintf("the logistic finishes %.3f ROC-AUC behind the best flexible learner, well within what a 34-patient test set can distinguish", logit_gap)`);
+(`r if (logit_rank == 1) sprintf("the logistic in fact posts the highest test ROC-AUC of all %d models", nrow(agg)) else sprintf("the logistic finishes %.3f ROC-AUC behind the best of the %d models, well within what a 34-patient test set can distinguish", logit_gap, nrow(agg))`);
 the strongest signal (admission oxygen
 requirement) is close to linear on the log-odds scale, so flexible boundaries mostly add variance.
 What ML *does* add here is confirmatory interpretation: permutation importance and the
@@ -690,5 +712,5 @@ prediction win.
    Does the deeper tree overfit a cohort of 111?
 
 3. **Partial dependence for a binary predictor.** Use `pdp_curve()` with
-   `rf_full` to draw the curve for `iddm` (grid `c(0, 1)`). With a binary
+   `rf1` to draw the curve for `iddm` (grid `c(0, 1)`). With a binary
    predictor, what two numbers does partial dependence reduce to?

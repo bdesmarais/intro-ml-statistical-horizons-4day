@@ -21,6 +21,7 @@ knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
 suppressWarnings(suppressMessages({
   library(haven); library(dplyr); library(sandwich); library(lmtest)
   library(rpart); library(rpart.plot)
+  library(glmnet)
   library(ranger); library(xgboost); library(e1071)
   library(class); library(kknn)
   library(ggplot2); library(knitr)
@@ -496,6 +497,21 @@ ols_rmse <- rmse(ols_pred, yte); ols_r2 <- r2(ols_pred, yte)
 null_rmse <- rmse(mean(ytr), yte)   # always-predict-the-mean anchor
 ```
 
+Alongside OLS we carry forward **Day 3's penalized regressions**: a ridge and a lasso
+with the penalty $\lambda$ tuned by `cv.glmnet` on the **training rows only**, then
+scored once on the same test set as everything else.
+
+```{r penalized-baseline}
+cv_ridge <- cv.glmnet(Xtr, ytr, alpha = 0)
+cv_lasso <- cv.glmnet(Xtr, ytr, alpha = 1)
+ridge_pred <- as.numeric(predict(cv_ridge, Xte, s = "lambda.min"))
+lasso_pred <- as.numeric(predict(cv_lasso, Xte, s = "lambda.min"))
+ridge_rmse <- rmse(ridge_pred, yte); ridge_r2 <- r2(ridge_pred, yte)
+lasso_rmse <- rmse(lasso_pred, yte); lasso_r2 <- r2(lasso_pred, yte)
+cat(sprintf("Ridge (lambda.min)  test RMSE %.4f   R2 %.3f\n", ridge_rmse, ridge_r2))
+cat(sprintf("Lasso (lambda.min)  test RMSE %.4f   R2 %.3f\n", lasso_rmse, lasso_r2))
+```
+
 # Learner 1 --- a single decision tree (rpart)
 
 A decision tree recursively splits the predictor space into rectangular regions,
@@ -687,12 +703,13 @@ and out-of-sample **\(R^2\)**.
 
 ```{r compare}
 comp <- data.frame(
-  Model = c("Null (mean)", "OLS (reproduced)", "Decision tree (rpart)",
+  Model = c("Null (mean)", "OLS (reproduced)", "Ridge (glmnet)", "Lasso (glmnet)",
+            "Decision tree (rpart)",
             "Random forest (ranger)", "Gradient boosting (xgboost)",
             "SVM (RBF)", "SVM (linear)", sprintf("k-NN (k=%d)", best_k)),
-  RMSE  = c(null_rmse, ols_rmse, tree_rmse, rf_rmse, xgb_rmse,
+  RMSE  = c(null_rmse, ols_rmse, ridge_rmse, lasso_rmse, tree_rmse, rf_rmse, xgb_rmse,
             rbf_rmse, lin_rmse, knn_rmse),
-  R2    = c(NA, ols_r2, tree_r2, rf_r2, xgb_r2, rbf_r2, lin_r2, knn_r2))
+  R2    = c(NA, ols_r2, ridge_r2, lasso_r2, tree_r2, rf_r2, xgb_r2, rbf_r2, lin_r2, knn_r2))
 comp$`vs OLS` <- sprintf("%+.1f%%", 100 * (comp$RMSE - ols_rmse) / ols_rmse)
 comp_show <- comp
 comp_show$RMSE <- sprintf("%.4f", comp$RMSE)
@@ -710,16 +727,20 @@ plt$Model <- factor(plt$Model, levels = plt$Model[order(plt$RMSE, decreasing = T
 ggplot(plt, aes(Model, RMSE)) +
   geom_col(fill = "grey35") +
   geom_hline(yintercept = ols_rmse, linetype = 2, colour = "firebrick") +
-  coord_flip(ylim = c(min(plt$RMSE) * 0.98, max(plt$RMSE) * 1.02)) +
+  coord_flip(ylim = c(0, max(plt$RMSE) * 1.05)) +
   labs(x = NULL, y = "Test-set RMSE") +
   theme_bw(base_size = 10)
 ```
 
 The best learner on this test set is **`r best_model`**. Four of the six flexible
 learners beat the reproduced OLS --- the random forest by about 7\% of RMSE
-(out-of-sample $R^2$ 0.28 vs. 0.17), then boosting, k-NN, and the RBF SVM by smaller
+(out-of-sample $R^2$ 0.27 vs. 0.17), then boosting, k-NN, and the RBF SVM by smaller
 margins --- while the single tree and the linear SVM land at or below the baseline
-(the linear SVM tracks OLS closely by construction). The gains are moderate in RMSE
+(the linear SVM tracks OLS closely by construction). Day 3's ridge and lasso land
+within a whisker of OLS (+0.1\% and +0.3\% RMSE): with `r ncol(Xtr)` well-chosen
+predictors and no high-dimensional excess, there is nothing for the penalty to buy,
+so any improvement must come from *functional form* --- which is exactly where the
+flexible learners find it. The gains are moderate in RMSE
 terms but consistent across the flexible learners, and they come from a specific
 place: curvature (notably in `years_lived`) that the additive linear model assumes
 away --- which the next section makes explicit.
@@ -730,20 +751,19 @@ Flexible learners are not black boxes. Two model-agnostic tools open them up:
 **permutation importance** (how much test error rises when a predictor's values are
 shuffled, breaking its link to the outcome) and **partial dependence** (the average
 predicted trust as we sweep one predictor across its range, holding the others at their
-observed values). We read both off the fitted random forest.
+observed values). We read both off the **same forest we tuned and fit on the training
+set above** --- no refitting on the full data, so the test set stays untouched here too.
 
 ```{r imp-pdp, fig.width=7, fig.height=3.4, fig.cap="Left: random-forest permutation importance (increase in MSE when a predictor is shuffled). Right: partial dependence of predicted trust on years lived at the current residence, holding other predictors at their observed values."}
-rf_full <- ranger(police_trust ~ ., data = ml_dat, num.trees = 1000,
-                  importance = "permutation")
-imp <- sort(rf_full$variable.importance, decreasing = TRUE)
+imp <- sort(rf$variable.importance, decreasing = TRUE)
 imp_df <- data.frame(var = factor(names(imp), levels = rev(names(imp))),
                      imp = as.numeric(imp))
 
 # Partial dependence for the top continuous predictor (years_lived)
-pd_grid <- seq(min(ml_dat$years_lived), quantile(ml_dat$years_lived, 0.98), length.out = 40)
+pd_grid <- seq(min(dtr$years_lived), quantile(dtr$years_lived, 0.98), length.out = 40)
 pd_val <- sapply(pd_grid, function(v) {
-  nd <- ml_dat; nd$years_lived <- v
-  mean(predict(rf_full, nd)$predictions)
+  nd <- dtr; nd$years_lived <- v
+  mean(predict(rf, nd)$predictions)
 })
 pd_df <- data.frame(years_lived = pd_grid, yhat = pd_val)
 
@@ -777,12 +797,13 @@ to edge past OLS on held-out data.
 The published OLS reproduces exactly (`non_sindhi` \(= -0.777\), `under30` \(= -0.554\))
 and remains a compelling *explanatory* model: age and Sindhi/non-Sindhi ethnicity are
 the clearest correlates of trust in Karachi's police. Running the *same* outcome and
-predictors through the full stable of classic learners --- an interpretable `rpart`
-tree, a `ranger` random forest, `xgboost` boosting, RBF- and linear-kernel SVMs, and
+predictors through Day 3's penalized regressions (ridge, lasso) and the full stable of
+classic learners --- an interpretable `rpart` tree, a `ranger` random forest, `xgboost`
+boosting, RBF- and linear-kernel SVMs, and
 CV-tuned k-NN --- shows how each learner reaches a prediction differently, yet all plug
 into one train/test protocol and one scoreboard. On this low-dimensional design the
 predictive gains over a well-specified OLS are moderate --- the forest trims RMSE by
-about 7\% and lifts out-of-sample $R^2$ from 0.17 to 0.28 --- and that *is* the Day-4
+about 7\% and lifts out-of-sample $R^2$ from 0.17 to 0.27 --- and that *is* the Day-4
 lesson: the flexible learners help precisely where the linear model's **functional
 form** is wrong (the nonlinear `years_lived` effect the partial-dependence plot
 exposes), and add little where it is right. Interpretation tools --- permutation importance and partial
@@ -791,10 +812,10 @@ dependence --- let us see that structure rather than take the ensemble's word fo
 # Independent exercises (each about 10 minutes)
 
 1. **A second partial-dependence curve.** Reuse the `pd_grid`/`pd_val` pattern
-   with `rf_full` to sweep `education` instead of `years_lived`. Is its shape
-   closer to the straight line the OLS assumes?
+   with the training-set forest `rf` to sweep `education` instead of
+   `years_lived`. Is its shape closer to the straight line the OLS assumes?
 
-2. **Two importance definitions.** Refit `rf_full` with
+2. **Two importance definitions.** Refit `rf` (same training data) with
    `importance = "impurity"` and compare the top three predictors with the
    permutation ranking. Do the two definitions agree?
 
