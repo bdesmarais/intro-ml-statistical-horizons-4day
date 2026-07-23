@@ -855,6 +855,11 @@ the right expectation when the signal is low-dimensional.
    retains (mirror the keep-table chunk) and compare with the `lambda.min`
    support. What does the 1-SE rule buy, and what does it cost, here?
 
-3. **Sensitivity to the penalty mix.** Re-run the elastic-net line of the
-   `oos` chunk with `alpha = 0.25` and `alpha = 0.75` instead of `best_alpha_tr`.
-   How sensitive is held-out AUC to the ridge/lasso mix on these data?
+3. **Penalized vs. smooth.** Compare the penalized logits with a logistic GAM
+   (Day 2) that lets the continuous context controls bend: fit
+   `library(mgcv); g <- gam(update(form, . ~ . - voterrpp - miginflow - orgage -
+   mobfreq6 + s(voterrpp) + s(miginflow) + s(orgage) + s(mobfreq6)),
+   family = binomial, data = Dtr)` and score
+   `p_gam <- as.numeric(predict(g, Dte, type = "response"))` with
+   `roc_auc(p_gam, yte)` and `pr_auc(p_gam, yte)`. Does smooth nonlinearity in
+   the context controls buy anything the penalized linear logits did not?

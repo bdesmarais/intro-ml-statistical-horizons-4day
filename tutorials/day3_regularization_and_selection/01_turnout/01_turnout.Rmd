@@ -594,9 +594,14 @@ the same predictive cost, which is often the whole point.
    `s = "lambda.1se"` instead of `"lambda.min"`. How much held-out RMSE do you
    give up, and how many predictors does the simpler model drop?
 
-2. **Noise immunity.** Add five pure-noise columns (`rnorm(nrow(X))`) to `X`,
-   re-split, and refit the lasso. Does it exclude the noise, and does
-   regularization now look better relative to OLS?
+2. **Penalized vs. smooth.** Day 2's answer to flexibility was the GAM. Fit
+   one on the training set with smooths on three strong continuous predictors,
+   `library(mgcv); g <- gam(turnout ~ s(regdifficulty) + s(squire) + s(ranney) +
+   tlness + lcr2 + mmds + straight + iuse2 + income2 + diversity3 + preselec +
+   redistrict + year, data = d[train, ])`, and score it with
+   `score(as.numeric(predict(g, d[test, ])))`. Does smooth nonlinearity beat
+   the (linear) regularized fits on held-out RMSE --- and what does that tell
+   you about where this problem's remaining signal lives?
 
 3. **The price of parsimony.** Refit best-subset selection on the training
    set forcing exactly four predictors
